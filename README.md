@@ -18,6 +18,12 @@ From this repository:
 uv tool install .
 ```
 
+From GitHub:
+
+```bash
+uv tool install git+https://github.com/jacob-greene/citeproc-endnote-uv
+```
+
 For project-local use:
 
 ```bash
@@ -45,4 +51,3 @@ The filter also checks common local names if the environment variable is not set
 - EndNote does the final conversion inside Word.
 - If multiple library records match an author-year pair, EndNote may ask you to resolve the match.
 - Record-number citations can be supported later if the BibTeX source includes an EndNote record number field.
-
