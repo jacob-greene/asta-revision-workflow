@@ -14,14 +14,27 @@ manuscript_v4.ris
 ## Inputs
 
 - Commented Word draft.
+- Comment extraction generated from the same Word draft using `docx-extract-comments`.
 - Any project-specific evidence files or literature search outputs needed to answer comments.
 - Optional BibTeX source when drafting from TeX.
 - The scientific-writing skills in `codex-skills/`, especially `draft-scientific-paper` and `edit-scientific-prose`.
 
+## Comment Extraction
+
+Extract Word comments from the DOCX package before planning edits:
+
+```bash
+docx-extract-comments commented-draft.docx -o comments.md --format markdown
+```
+
+This command reads `word/comments.xml` and the comment anchors in `word/document.xml`. It records the comment ID, comment text, anchored text, and full paragraph text.
+
+Do not use Pandoc, Markdown export, or plain text extraction as the comment source. Those routes can omit Word comments and make an actively commented draft appear un-commented.
+
 ## Agent Roles
 
 1. Comment interpretation and revision planning agent
-   - Extract every Word comment and its surrounding paragraph.
+   - Read the `docx-extract-comments` output for every Word comment and its surrounding paragraph.
    - Produce a concrete plan keyed to comment IDs.
    - Produce a current outline based only on the commented draft text.
    - List the exact paragraphs that may be revised.
@@ -54,6 +67,7 @@ manuscript_v4.ris
 When a revision pass starts from a Word draft with numeric superscript citations and a numbered reference list, generate the RIS from the revised Word reference list:
 
 ```bash
+docx-extract-comments commented-draft.docx -o comments.md --format markdown
 docx-reference-list-to-ris manuscript_v4_with_refs.docx manuscript_v4.ris
 docx-numeric-to-endnote-temp manuscript_v4_with_refs.docx manuscript_v4.docx
 docx-word-sanity manuscript_v4.docx

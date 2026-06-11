@@ -16,6 +16,7 @@ bib-to-ris = "citeproc_endnote_uv.ris:main"
 docx-reference-list-to-ris = "citeproc_endnote_uv.docx_reference_list_to_ris:main"
 docx-numeric-to-endnote-temp = "citeproc_endnote_uv.docx_numeric_to_endnote_temp:main"
 docx-word-sanity = "citeproc_endnote_uv.docx_word_sanity:main"
+docx-extract-comments = "citeproc_endnote_uv.docx_extract_comments:main"
 
 [build-system]
 requires = ["hatchling"]

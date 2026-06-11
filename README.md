@@ -25,6 +25,9 @@ Simple workflow chart:
 Commented Word draft
         |
         v
+docx-extract-comments
+        |
+        v
 Agent revision workflow
         |
         +--> comment plan and outline
@@ -49,6 +52,14 @@ The agent workflow has four explicit passes:
 4. **Tone and concision**: make the prose direct, readable, and concise while preserving the scientific meaning.
 
 The final implementation should be based only on the provided commented draft and its comments. Do not rebuild from stale Markdown, TeX, or archived Word drafts unless those files were generated from the same current `.docx`.
+
+Extract comments directly from the Word file before planning revisions:
+
+```bash
+docx-extract-comments commented-draft.docx -o comments.md --format markdown
+```
+
+Do not rely on Pandoc or plain-text exports to find Word comments. Pandoc can preserve document text while hiding comment text and comment anchors, which will make a commented draft look un-commented.
 
 ## Install
 
@@ -93,6 +104,7 @@ bib-to-ris references.bib references.ris
 For workflows that begin from a `.docx` draft with numeric superscript citations and a numbered reference list:
 
 ```bash
+docx-extract-comments commented-draft.docx -o comments.md --format markdown
 docx-reference-list-to-ris revised-with-reference-list.docx revised.ris
 docx-numeric-to-endnote-temp revised-with-reference-list.docx revised-endnote-temp.docx
 docx-word-sanity revised-endnote-temp.docx
