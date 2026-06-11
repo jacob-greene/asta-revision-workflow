@@ -8,6 +8,48 @@ This repository combines three reusable pieces for scientific writing projects:
 
 The tools are project-neutral. A thesis, manuscript, grant, or report can keep its own source files elsewhere and use this repository as the installed workflow layer.
 
+## Typical Word Comment Workflow
+
+The common use case is a Word-first revision round:
+
+1. Write or revise the draft in Word.
+2. Add Word comments to the passages that need revision.
+3. Submit the commented `.docx` to an agent with the instruction that the commented draft is the source of truth.
+4. The agent interprets comments, revises only comment-scoped text, and preserves un-commented sections unless an adjacent change is explicitly justified.
+5. The agent returns an updated `.docx` plus a same-stem `.ris`.
+6. Import the `.ris` into EndNote, open the `.docx` in Word, and run EndNote's **Update Citations and Bibliography** command.
+
+Simple workflow chart:
+
+```text
+Commented Word draft
+        |
+        v
+Agent revision workflow
+        |
+        +--> comment plan and outline
+        +--> evidence and specificity check
+        +--> rigor critique
+        +--> tone and concision pass
+        |
+        v
+Revised Word draft with EndNote temporary citations
+        |
+        +--> paired RIS generated from the Word reference list
+        |
+        v
+Import RIS into EndNote, then update citations in Word
+```
+
+The agent workflow has four explicit passes:
+
+1. **Comment interpretation and revision planning**: read each Word comment with its surrounding text, create a concrete revision plan, and identify exactly which paragraphs may change.
+2. **Evidence and specificity**: check the commented regions for vague, unsupported, or overly broad claims; add targeted evidence or soften the wording.
+3. **Rigor critique**: review the proposed changes for scientific accuracy, overclaiming, missing caveats, and accidental changes to un-commented sections.
+4. **Tone and concision**: make the prose direct, readable, and concise while preserving the scientific meaning.
+
+The final implementation should be based only on the provided commented draft and its comments. Do not rebuild from stale Markdown, TeX, or archived Word drafts unless those files were generated from the same current `.docx`.
+
 ## Install
 
 From this repository:
