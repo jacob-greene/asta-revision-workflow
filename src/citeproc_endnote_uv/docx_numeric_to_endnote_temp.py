@@ -159,10 +159,17 @@ def convert(source: Path, output: Path, keep_references: bool = False) -> None:
         ambiguous_keys = {key for key, titles in author_year_titles.items() if len(titles) > 1}
 
         for paragraph in paragraphs[:ref_index]:
+            preceding = ""
             for run in paragraph.findall(f"{W}r"):
                 run_text = text_of(run)
                 if is_superscript_run(run) and CITE_RE.match(run_text):
-                    set_run_text(run, make_temp_citation(run_text, references, ambiguous_keys))
+                    citation = make_temp_citation(run_text, references, ambiguous_keys)
+                    if preceding and not preceding[-1].isspace():
+                        citation = " " + citation
+                    set_run_text(run, citation)
+                    preceding += citation
+                else:
+                    preceding += run_text
 
         if not keep_references:
             for paragraph in paragraphs[ref_index:]:
