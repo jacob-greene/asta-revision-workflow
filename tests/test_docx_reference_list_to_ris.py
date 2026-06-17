@@ -1,4 +1,9 @@
-from citeproc_endnote_uv.docx_reference_list_to_ris import author_list, parse_reference, write_record
+from citeproc_endnote_uv.docx_reference_list_to_ris import (
+    author_list,
+    parse_reference,
+    split_reference_entries,
+    write_record,
+)
 from zipfile import ZIP_DEFLATED, ZipFile
 from xml.etree import ElementTree as ET
 
@@ -39,6 +44,37 @@ def test_reference_record_writes_all_authors():
     assert "AU  - Scelfo, A." in record
     assert "AU  - Pasini, D." in record
     assert "DO  - 10.1016/j.molcel.2013.10.030" in record
+
+
+def test_reference_split_does_not_break_h3_variant_titles():
+    text = (
+        "1. Kraushaar, D. et al. (2013). Genome-wide incorporation dynamics reveal "
+        "distinct categories of turnover for the histone variant H3.3. Genome Biology 14, R121-R121. "
+        "\n2. Tie, F., Banerjee, R., Conrad, P.A., Scacheri, P. & Harte, P. (2012). "
+        "Histone Demethylase UTX and Chromatin Remodeler BRM Bind Directly to CBP and "
+        "Modulate Acetylation of Histone H3 Lysine 27. Molecular and Cellular Biology 32, 2323-2334."
+    )
+
+    entries = split_reference_entries(text)
+
+    assert len(entries) == 2
+    assert entries[0][0] == 1
+    assert "H3.3" in entries[0][1]
+    assert entries[1][0] == 2
+    assert "Lysine 27" in entries[1][1]
+
+
+def test_end_year_entry_with_ampersand_author_list_parses_title():
+    reference = parse_reference(
+        61,
+        "Allshire, R.C. & Madhani, H.D. Ten principles of heterochromatin formation and function. "
+        "Nature Reviews Molecular Cell Biology 19, 229-244 (2018).",
+    )
+
+    assert reference is not None
+    assert reference.authors == "Allshire, R.C. & Madhani, H.D."
+    assert reference.year == "2018"
+    assert reference.title == "Ten principles of heterochromatin formation and function"
 
 
 def test_only_true_author_year_collisions_need_titles():
@@ -82,3 +118,57 @@ def test_numeric_citation_conversion_adds_separator_before_temporary_cite(tmp_pa
     converted = "".join(t.text or "" for t in root.findall(".//w:t", ns))
     assert "H3K27me3 {Cao, 2004}" in converted
     assert "H3K27me3{Cao, 2004}" not in converted
+
+
+def test_numeric_citation_conversion_uses_ris_and_strips_stale_endnote_parts(tmp_path):
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+    ris = tmp_path / "refs.ris"
+    document_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t>Claim</w:t></w:r>
+      <w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:t>1</w:t></w:r>
+    </w:p>
+    <w:p><w:r><w:t>1.Bad, B. (2020). Truncated source title. Journal 1, 1-2.</w:t></w:r></w:p>
+  </w:body>
+</w:document>
+"""
+    styles_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:styleId="EndNoteBibliography" w:type="paragraph"><w:name w:val="EndNote Bibliography"/></w:style>
+</w:styles>
+"""
+    comments_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>
+"""
+    ris.write_text(
+        "\n".join(
+            [
+                "TY  - JOUR",
+                "TI  - Complete RIS title",
+                "AU  - Real, Author",
+                "PY  - 2021",
+                "ER  -",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with ZipFile(source, "w", ZIP_DEFLATED) as zf:
+        zf.writestr("word/document.xml", document_xml)
+        zf.writestr("word/styles.xml", styles_xml)
+        zf.writestr("word/comments.xml", comments_xml)
+
+    convert(source, output, ris=ris)
+
+    with ZipFile(output) as zf:
+        names = set(zf.namelist())
+        root = ET.fromstring(zf.read("word/document.xml"))
+        styles = zf.read("word/styles.xml").decode("utf-8")
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    converted = "".join(t.text or "" for t in root.findall(".//w:t", ns))
+    assert "{Real, 2021}" in converted
+    assert "word/comments.xml" not in names
+    assert "EndNote" not in styles

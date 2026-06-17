@@ -19,7 +19,7 @@ from xml.etree import ElementTree as ET
 W_URI = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 W = f"{{{W_URI}}}"
 
-REF_START_RE = re.compile(r"(?<!\d)(\d{1,3})\.\s*(?=[A-Z])")
+REF_START_RE = re.compile(r"(?:^|\n)\s*(\d{1,3})\.\s*(?=[A-Z])")
 YEAR_RE = re.compile(r"\((\d{4})\)")
 DOI_RE = re.compile(r"\b10\.\d{4,9}/\S+")
 PMID_RE = re.compile(r"\bPMID:\s*(\d+)", re.IGNORECASE)
@@ -79,7 +79,7 @@ def reference_text_from_docx(docx: Path) -> str:
                 break
         if ref_index is None:
             raise RuntimeError("Could not locate numbered reference list in DOCX.")
-        return clean(" ".join(text_of(p) for p in paragraphs[ref_index:]))
+        return "\n".join(clean(text_of(p)) for p in paragraphs[ref_index:])
 
 
 def split_reference_entries(reference_text: str) -> list[tuple[int, str]]:
@@ -103,6 +103,39 @@ def first_sentence_after_year(entry: str) -> tuple[str, str]:
     return clean(title), clean(tail)
 
 
+def split_end_year_entry(entry: str) -> tuple[str, str, str] | None:
+    """Parse references that place the year at the end, e.g. Nature 492, 108-112 (2012)."""
+
+    year_match = re.search(r"\((\d{4})\)\.?$", entry)
+    if not year_match:
+        return None
+    before_year = clean(entry[: year_match.start()])
+    if ". " not in before_year:
+        return None
+
+    if " et al. " in before_year:
+        authors, rest = before_year.split(" et al. ", 1)
+        authors = clean(f"{authors} et al.")
+    else:
+        authors = ""
+        rest = ""
+        for match in re.finditer(r"\.\s+", before_year):
+            candidate_rest = before_year[match.end() :]
+            if candidate_rest.startswith("& ") or candidate_rest.lower().startswith("and "):
+                continue
+            if candidate_rest[:1].isupper():
+                authors = clean(before_year[: match.end() - 1])
+                rest = clean(candidate_rest)
+                break
+        if not authors:
+            return None
+    if ". " in rest:
+        title, tail = rest.split(". ", 1)
+    else:
+        title, tail = rest.rstrip("."), ""
+    return authors, clean(title), clean(tail)
+
+
 def parse_tail(tail: str) -> tuple[str, str, str]:
     tail = DOI_RE.sub("", tail)
     tail = DOI_URL_RE.sub("", tail)
@@ -115,6 +148,17 @@ def parse_tail(tail: str) -> tuple[str, str, str]:
 
 
 def parse_reference(number: int, entry: str) -> Reference | None:
+    end_year = split_end_year_entry(entry)
+    if end_year is not None:
+        authors, title, tail = end_year
+        year = re.search(r"\((\d{4})\)\.?$", entry).group(1)  # type: ignore[union-attr]
+        journal, volume, pages = parse_tail(tail)
+        doi_match = DOI_RE.search(entry)
+        pmid_match = PMID_RE.search(entry)
+        doi = doi_match.group(0).rstrip(".") if doi_match else ""
+        pmid = pmid_match.group(1) if pmid_match else ""
+        return Reference(number, authors, year, title, journal, volume, pages, doi, pmid)
+
     year_match = YEAR_RE.search(entry)
     if not year_match:
         return None
@@ -180,13 +224,17 @@ def write_record(reference: Reference) -> list[str]:
 
 def export_ris(source_docx: Path, output_ris: Path) -> int:
     references: list[Reference] = []
-    seen: set[tuple[str, str, str]] = set()
+    failed: list[tuple[int, str]] = []
     for number, entry in split_reference_entries(reference_text_from_docx(source_docx)):
         reference = parse_reference(number, entry)
-        if reference is None or reference.key in seen:
+        if reference is None:
+            failed.append((number, entry[:220]))
             continue
-        seen.add(reference.key)
         references.append(reference)
+
+    if failed:
+        details = "\n".join(f"{number}. {snippet}" for number, snippet in failed[:20])
+        raise RuntimeError(f"Could not parse {len(failed)} reference entries:\n{details}")
 
     records: list[str] = []
     for reference in references:

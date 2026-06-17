@@ -33,6 +33,8 @@ Do not use Pandoc, Markdown export, or plain text extraction as the comment sour
 
 ## Agent Roles
 
+Every revision pass must run all four roles below in order. Do not skip directly from comment extraction to implementation, even when the requested change looks mechanical or citation-only. If a pass starts from a draft with no active Word comments, define the revision scope from the user's request, the previous comment-response summary, and the paragraphs changed in the prior pass; then run the same four roles on that explicit scope.
+
 1. Comment interpretation and revision planning agent
    - Read the `docx-extract-comments` output for every Word comment and its surrounding paragraph.
    - Produce a concrete plan keyed to comment IDs.
@@ -41,11 +43,15 @@ Do not use Pandoc, Markdown export, or plain text extraction as the comment sour
 
 2. Evidence and specificity agent
    - Scan the full draft for vague, unsupported, or weakly justified claims, focusing on commented regions.
+   - For every modified claim, first check whether the same sentence or an adjacent sentence has a citation that plausibly supports it.
+   - If nearby existing citations do not support the modified claim, query literature tools or Asta for the specific evidence gap and either add the citation, soften the claim, or remove it.
    - Query literature tools only for targeted evidence gaps.
    - Recommend citations, caveats, or softer wording.
 
 3. Rigor critique agent
    - Critique the plan for overclaiming, missing caveats, and logical inconsistency.
+   - Treat every new knowledge claim as provisional until tied to specific evidence. Be highly skeptical of broad, causal, conserved, universal, or mechanistic claims introduced during revision.
+   - Prefer narrower wording over adding a citation to an overbroad statement. If the cited evidence is indirect, model-based, organism-specific, or context-specific, the sentence must say so.
    - Flag places where restructuring could accidentally alter uncommented material.
    - Reject edits to un-commented paragraphs unless the plan names the comment that requires the adjacent change.
 
@@ -58,8 +64,18 @@ Do not use Pandoc, Markdown export, or plain text extraction as the comment sour
 - Patch only commented sections and required adjacent text.
 - Do not revise un-commented paragraphs by default.
 - The only exception is adjacent text explicitly required by a section-level comment; the plan must identify that exception before implementation.
+- Within a commented paragraph, preserve source sentences that are not implicated by the comment. Full-paragraph rewrites are allowed only when the comment asks for paragraph-level restructuring or the revision plan explicitly justifies the rewrite.
 - Prefer precise caveats over unsupported citations.
+- Do not introduce broad synthesis claims during implementation unless the rigor critique step explicitly approves the claim and identifies the supporting citations.
+- Do not rebuild prose from older TeX or Markdown. If EndNote temporary citations are required, first synchronize the exact revised `.docx` content into a fresh citation source.
+- Every pass must emit a revised `.docx` and a complete matching `.ris` generated from the full Word reference list used for that pass. The RIS must include every numbered reference in the Word bibliography, not only cited records, and the exporter must fail rather than silently skip malformed entries.
 - Keep paragraph length appropriate for the document; for dense scientific prose, 4-5 sentences is a useful default ceiling.
+- Before converting numeric citations to EndNote temporary citations, run the modified-statement support check on the revised raw DOCX. Any modified sentence without a same-sentence or adjacent citation must be resolved by checking nearby existing citations, adding a citation, softening/removing the claim, or requerying literature tools for targeted evidence.
+- Also before conversion, run the plain numeric citation check on the revised raw DOCX. This catches intake failures where citations next to digit-containing scientific terms, such as `PRC2`, `H3K27me3`, or `H3.3K27M`, were not converted into superscript citation runs.
+- After converting to EndNote temporary citations, run the DOCX/RIS sync check. There must be no `REF#` placeholders, missing RIS entries, or ambiguous author-year temporary citations without title disambiguation.
+- If Word or EndNote crashes while updating citations, generate an EndNote-safe copy with short title-prefix disambiguation for duplicate author-year groups. Prefer `{Author, Year, First few title words}` over full-title temporary citations; this keeps records unique without long comma-heavy strings that can destabilize EndNote.
+- EndNote-ready DOCX files must not mix new temporary citations with old formatted EndNote fields. Before delivery, strip `ADDIN EN.CITE` field wrappers, stale `EN.*` document variables, comment parts, and unused EndNote bibliography styles; then verify those strings are absent from the final DOCX package.
+- Before delivery, compare the revised raw DOCX against the current source Word draft. All un-commented paragraphs must match exactly, and comment-scoped paragraphs must be reviewed for unintended reversion to older wording or older citation numbering.
 - Before delivery, state which commented sections were revised and whether any un-commented adjacent paragraphs changed under a section-level comment.
 
 ## Citation Pipeline for Word Drafts
@@ -69,13 +85,16 @@ When a revision pass starts from a Word draft with numeric superscript citations
 ```bash
 docx-extract-comments commented-draft.docx -o comments.md --format markdown
 docx-reference-list-to-ris manuscript_v4_with_refs.docx manuscript_v4.ris
-docx-numeric-to-endnote-temp manuscript_v4_with_refs.docx manuscript_v4.docx
+docx-modified-citation-support --source commented-draft.docx --revised manuscript_v4_with_refs.docx
+docx-plain-numeric-citation-check manuscript_v4_with_refs.docx
+docx-numeric-to-endnote-temp manuscript_v4_with_refs.docx manuscript_v4.docx --ris manuscript_v4.ris
 docx-word-sanity manuscript_v4.docx
+docx-endnote-ris-sync manuscript_v4.docx manuscript_v4.ris
 ```
 
 `docx-reference-list-to-ris` uses the Word reference list as the citation authority. This ensures references manually added by a collaborator in Word propagate into the RIS.
 
-`docx-numeric-to-endnote-temp` converts numeric superscript citations into EndNote temporary citations. When two distinct references share the same first author and year, the temporary citation includes the title so EndNote matching is unique. Duplicate entries for the same paper remain concise.
+`docx-numeric-to-endnote-temp` converts numeric superscript citations into EndNote temporary citations. Pass `--ris` so citation metadata comes from the complete paired RIS rather than a lossy Word reference parse. When two distinct references share the same first author and year, the temporary citation includes the title so EndNote matching is unique. Duplicate entries for the same paper remain concise.
 
 By default, the static reference list is removed from the generated `.docx`; EndNote should regenerate the bibliography after the user imports the paired RIS and runs `Update Citations and Bibliography`.
 
