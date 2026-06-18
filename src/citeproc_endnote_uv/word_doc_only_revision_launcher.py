@@ -44,7 +44,8 @@ REVIEWER_TASKS = {
     "citation_ris_reviewer.md": (
         "Review citation support and bibliography integrity. Check that each modified statement is supported by "
         "same/adjacent citations, that citation numbers map to the intended claims, and that the paired RIS is "
-        "derived only from the current source Word DOCX reference list, with no archive RIS/backfill records."
+        "derived from the current source Word DOCX reference list plus any run-local, explicitly recorded Asta "
+        "reference additions, with no archive RIS/backfill records."
     ),
     "style_reviewer.md": (
         "Review tone and paragraph logic against the scientific-writing skills. Check topic sentences, concise "
@@ -160,6 +161,64 @@ def reference_numbers(paragraphs: list[str]) -> list[int]:
         if match:
             numbers.append(int(match.group(1)))
     return numbers
+
+
+def asta_reference_additions(run_dir: Path) -> list[dict[str, object]]:
+    """Return explicitly recorded Asta reference additions for this run."""
+    path = run_dir / "asta_reference_additions.json"
+    if not path.exists():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        raise SystemExit(f"Asta reference additions must be a JSON list: {path}")
+    additions: list[dict[str, object]] = []
+    for index, item in enumerate(data, start=1):
+        if not isinstance(item, dict):
+            raise SystemExit(f"Asta reference addition {index} is not an object: {path}")
+        for key in ("number", "title", "source"):
+            if key not in item:
+                raise SystemExit(f"Asta reference addition {index} is missing `{key}`: {path}")
+        additions.append(item)
+    return additions
+
+
+def citation_source_for_references(
+    source_docx: Path, raw_docx: Path, manifest_numbers: list[int], raw_numbers: list[int], run_dir: Path
+) -> tuple[Path, list[dict[str, object]], str]:
+    """Validate reference-number provenance and choose the DOCX used to generate RIS."""
+    additions = asta_reference_additions(run_dir)
+    if not additions:
+        if raw_numbers != manifest_numbers:
+            raise SystemExit(
+                "Revised raw DOCX reference numbers differ from the source Word DOCX. "
+                "Citations and RIS must be derived only from the current source Word reference list "
+                "unless run-local Asta reference additions are recorded."
+            )
+        return source_docx, additions, "current-source-docx-reference-list-only"
+
+    expected_addition_numbers = [int(item["number"]) for item in additions]
+    expected_numbers = manifest_numbers + expected_addition_numbers
+    if raw_numbers != expected_numbers:
+        raise SystemExit(
+            "Revised raw DOCX reference numbers do not match the source Word references plus "
+            f"recorded Asta additions. Expected {expected_numbers}, found {raw_numbers}."
+        )
+
+    if expected_addition_numbers != list(range(manifest_numbers[-1] + 1, manifest_numbers[-1] + 1 + len(additions))):
+        raise SystemExit("Asta reference additions must be appended as consecutive reference numbers.")
+
+    raw_paragraphs = content_paragraphs(docx_roots(raw_docx)[0])
+    added_titles = {int(item["number"]): str(item["title"]).lower() for item in additions}
+    for paragraph in raw_paragraphs:
+        match = REF_START_RE.match(paragraph)
+        if not match:
+            continue
+        number = int(match.group(1))
+        title = added_titles.get(number)
+        if title and title not in paragraph.lower():
+            raise SystemExit(f"Asta reference addition {number} title was not found in the raw DOCX reference text.")
+
+    return raw_docx, additions, "current-source-docx-plus-recorded-asta-additions"
 
 
 def without_numeric_citation_clusters(text: str) -> str:
@@ -432,13 +491,15 @@ def finalize(args: argparse.Namespace) -> int:
         raise SystemExit(f"Unexpected paragraph changes outside Word-comment scope: {unexpected}")
 
     raw_reference_numbers = reference_numbers(content_paragraphs(docx_roots(raw_docx)[0]))
-    if raw_reference_numbers != manifest["reference_numbers"]:
-        raise SystemExit(
-            "Revised raw DOCX reference numbers differ from the source Word DOCX. "
-            "Citations and RIS must be derived only from the current source Word reference list."
-        )
-    run(["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(source_docx), str(ris)])
-    run(["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(source_docx), str(ris), "--check"])
+    citation_source_docx, recorded_asta_additions, citation_source_policy = citation_source_for_references(
+        source_docx,
+        raw_docx,
+        manifest["reference_numbers"],
+        raw_reference_numbers,
+        run_dir,
+    )
+    run(["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(citation_source_docx), str(ris)])
+    run(["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(citation_source_docx), str(ris), "--check"])
     paragraph_arg = ",".join(str(index) for index in sorted(allowed)) if allowed else None
     support_cmd = [
         "python3",
@@ -460,16 +521,13 @@ def finalize(args: argparse.Namespace) -> int:
             str(final_docx),
             "--ris",
             str(ris),
-            "--short-title-disambiguation",
-            "--title-prefix-words",
-            "6",
             "--keep-references",
         ]
     )
     run(["unzip", "-t", str(final_docx)])
     run(["python3", str(SCRIPT_DIR / "docx_word_sanity.py"), str(final_docx)])
-    run(["python3", str(SCRIPT_DIR / "docx_endnote_ris_sync.py"), str(final_docx), str(ris), "--allow-title-prefix"])
-    run(["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(source_docx), str(ris), "--check"])
+    run(["python3", str(SCRIPT_DIR / "docx_endnote_ris_sync.py"), str(final_docx), str(ris)])
+    run(["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(citation_source_docx), str(ris), "--check"])
 
     stale = {path.name: stale_marker_counts(path) for path in (raw_docx, final_docx)}
     if any(count for counts in stale.values() for count in counts.values()):
@@ -486,8 +544,9 @@ def finalize(args: argparse.Namespace) -> int:
         "citation_only_paragraphs": sorted(citation_only),
         "reference_region_paragraphs": sorted(reference_region),
         "reference_integrity_paragraphs": sorted(reference_integrity),
-        "citation_source_policy": manifest.get("citation_source_policy", "current-source-docx-reference-list-only"),
-        "citation_source_docx": source_docx.name,
+        "citation_source_policy": citation_source_policy,
+        "citation_source_docx": citation_source_docx.name,
+        "recorded_asta_reference_additions": recorded_asta_additions,
         "final_docx": final_docx.name,
         "ris": ris.name,
         "reviewers": manifest.get("reviewers", {}),
