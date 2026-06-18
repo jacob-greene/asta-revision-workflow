@@ -25,7 +25,7 @@ Simple workflow chart:
 Commented Word draft
         |
         v
-pandoc-word-revision start
+pandoc-word-revision run
         |
         +--> source markdown
         +--> comments markdown/json
@@ -35,7 +35,7 @@ pandoc-word-revision start
         +--> agent_workflow tasks and audit template
         |
         v
-Agent revision workflow over run-local markdown
+Configured agent revision workflow over run-local markdown
         |
         +--> comment plan and outline
         +--> evidence and specificity check
@@ -58,31 +58,37 @@ The agent workflow has four explicit passes:
 3. **Rigor critique**: review the proposed changes for scientific accuracy, overclaiming, missing caveats, and accidental changes to un-commented sections.
 4. **Tone and concision**: make the prose direct, readable, and concise while preserving the scientific meaning.
 
-`pandoc-word-revision finalize` enforces this workflow. It refuses to compile
-the final Word/RIS outputs until `agent_workflow/agent_workflow_audit.json`
-exists, names the same source DOCX hash, hashes the exact `*.revised.md` being
-finalized, marks all four passes complete, points to non-empty pass reports, and
-sets the required overall readiness checks to true.
+`pandoc-word-revision run` is the complete launcher. It first creates the Pandoc
+run directory and all step-1 outputs. It then invokes the agent workflow command
+on those outputs, resolves required Asta requests, and finalizes the Word/RIS
+outputs. The launcher always requires a configured agent workflow command for
+step 2; pass `--agent-command` or set `PANDOC_REVISION_AGENT_COMMAND`. The agent
+runner is responsible for revising the run-local `*.revised.md`, performing the
+four review passes, recording any required Asta requests, and writing the audit.
+Finalization refuses to compile until
+`agent_workflow/agent_workflow_audit.json` exists, names the same source DOCX
+hash, hashes the exact `*.revised.md` being finalized, marks all four passes
+complete, points to non-empty pass reports, and sets the required overall
+readiness checks to true.
 
 The final implementation should be based only on the provided commented draft and its comments. Do not rebuild from stale Markdown, TeX, or archived Word drafts unless those files were generated from the same current `.docx`.
 
-Launch the Pandoc-centered Word workflow before planning revisions:
+Launch the complete Pandoc-centered Word workflow:
 
 ```bash
-pandoc-word-revision start commented-draft.docx \
-  --output-stem manuscript_v4
+PANDOC_REVISION_ASTA_COMMAND='asta-evidence-resolver --request {request_json} --output {output_json} --ris {output_ris}' \
+PANDOC_REVISION_AGENT_COMMAND='revision-agent --manifest {manifest} --run-dir {run_dir}' \
+  pandoc-word-revision run commented-draft.docx \
+    --output-stem manuscript_v4
 ```
 
-This creates a run directory containing `manuscript_v4.source.md`,
-`manuscript_v4.revised.md`, `manuscript_v4.comments.md`,
-`manuscript_v4.comments.json`, `style-reference.docx`,
-`citation_metadata.ris`, `citation_metadata_audit.json`, `agent_workflow/`, and
-a manifest. It also writes `agent_inputs/` and `launcher_profile.json` so each
-agent pass can load a smaller, role-appropriate context. Word comments and
-complete citation metadata are extracted directly from the DOCX; Pandoc supplies
-the editable markdown and the Word style reference. The `agent_workflow/`
-directory contains task files, report paths, and an audit template that must be
-completed before finalization.
+Agent runners must revise `*.revised.md`, write all four report files,
+record Asta needs in `agent_workflow/asta_requests.json`, and write
+`agent_workflow/agent_workflow_audit.json`. If the command string contains
+placeholders, `{manifest}`, `{run_dir}`, `{source_docx}`, `{source_markdown}`,
+`{revised_markdown}`, `{comments_markdown}`, `{comments_json}`, `{audit_file}`,
+and `{asta_requests}` are expanded. If not, the launcher appends `--manifest`
+and `--run-dir`.
 
 ## Install
 
@@ -127,22 +133,23 @@ bib-to-ris references.bib references.ris
 For workflows that begin from a `.docx` draft with numeric superscript citations and a numbered reference list, use the Pandoc launcher:
 
 ```bash
-pandoc-word-revision start commented-draft.docx \
-  --output-stem manuscript_v4
-
-# edit manuscript_v4_pandoc_revision_run/manuscript_v4.revised.md
-
-pandoc-word-revision finalize manuscript_v4_pandoc_revision_run/manifest.json
+pandoc-word-revision run commented-draft.docx \
+  --output-stem manuscript_v4 \
+  --agent-command 'revision-agent --manifest {manifest} --run-dir {run_dir}' \
+  --asta-command 'asta-evidence-resolver --request {request_json} --output {output_json} --ris {output_ris}'
 ```
 
-`pandoc-word-revision start` extracts text and style through Pandoc, extracts
-comments directly from Word XML, and extracts complete citation metadata from
-embedded EndNote field records in the same source DOCX. `finalize` recompiles
-the revised markdown with Pandoc only after validating the required agent
-workflow audit. It then generates the paired RIS from the current recompiled
-reference list, uses the run-local metadata overlay to restore complete
-author/DOI fields, converts numeric citations to EndNote temporary citations,
+`pandoc-word-revision run` extracts text and style through Pandoc, extracts
+comments directly from Word XML, extracts complete citation metadata from
+embedded EndNote field records in the same source DOCX, runs the configured
+agent workflow, resolves required Asta requests, validates the required agent
+workflow audit, recompiles the revised markdown, generates the paired RIS from
+the current recompiled reference list, restores complete author/DOI fields from
+run-local metadata, converts numeric citations to EndNote temporary citations,
 and runs sanity/sync checks.
+
+`pandoc-word-revision start` and `pandoc-word-revision finalize` remain
+available as lower-level debugging commands when a run needs manual inspection.
 
 `launcher_profile.json` records per-step launcher timings, artifact sizes, and
 approximate token counts. `agent_inputs/agent_input_manifest.json` names the

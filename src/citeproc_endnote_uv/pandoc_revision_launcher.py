@@ -581,6 +581,45 @@ def asta_command_parts(command: str, request_json: Path, output_json: Path, outp
     ]
 
 
+def workflow_agent_command_parts(command: str, run_dir: Path, manifest_path: Path, manifest: dict) -> list[str]:
+    workflow = manifest.get("agent_workflow", {})
+    artifacts = manifest.get("generated_artifacts", {})
+    replacements = {
+        "run_dir": str(run_dir),
+        "manifest": str(manifest_path),
+        "source_docx": str(run_dir / manifest["source_docx"]),
+        "source_markdown": str(run_dir / artifacts["source_markdown"]),
+        "revised_markdown": str(run_dir / artifacts["revised_markdown"]),
+        "comments_markdown": str(run_dir / manifest["comments"]["markdown"]),
+        "comments_json": str(run_dir / manifest["comments"]["json"]),
+        "audit_file": str(run_dir / workflow.get("audit_file", "agent_workflow/agent_workflow_audit.json")),
+        "asta_requests": str(run_dir / workflow.get("asta_requests", "agent_workflow/asta_requests.json")),
+    }
+    if "{" in command and "}" in command:
+        return [part.format(**replacements) for part in shlex.split(command)]
+    return [
+        *shlex.split(command),
+        "--manifest",
+        str(manifest_path),
+        "--run-dir",
+        str(run_dir),
+    ]
+
+
+def run_agent_workflow_command(run_dir: Path, manifest_path: Path, command: str | None) -> None:
+    resolver = command or os.environ.get("PANDOC_REVISION_AGENT_COMMAND")
+    if not resolver:
+        raise SystemExit(
+            "The complete launcher requires an agent workflow command. "
+            "Set PANDOC_REVISION_AGENT_COMMAND or pass --agent-command so step 2 can revise, review, "
+            "write agent reports, update agent_workflow/asta_requests.json when needed, and write "
+            "agent_workflow/agent_workflow_audit.json. The launcher no longer falls back to a "
+            "manual handoff."
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    run(workflow_agent_command_parts(resolver, run_dir, manifest_path, manifest))
+
+
 def report_requests_asta(run_dir: Path, workflow: dict[str, object]) -> bool:
     patterns = [
         re.compile(r"\b(?:needs?|requires?|required)\s+(?:an\s+)?Asta\s+requery\b", re.IGNORECASE),
@@ -937,6 +976,23 @@ def start(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_complete(args: argparse.Namespace) -> int:
+    source = Path(args.source_docx).resolve()
+    output_stem = args.output_stem or source.stem
+    run_dir = (Path(args.run_dir) if args.run_dir else source.parent / f"{output_stem}_pandoc_revision_run").resolve()
+    manifest_path = run_dir / "manifest.json"
+
+    start_args = argparse.Namespace(
+        source_docx=args.source_docx,
+        output_stem=args.output_stem,
+        run_dir=args.run_dir,
+        metadata_ris=args.metadata_ris,
+    )
+    start(start_args)
+    run_agent_workflow_command(run_dir, manifest_path, args.agent_command)
+    return finalize(argparse.Namespace(manifest=str(manifest_path), asta_command=args.asta_command))
+
+
 def finalize(args: argparse.Namespace) -> int:
     require_pandoc()
     manifest_path = Path(args.manifest).resolve()
@@ -1038,6 +1094,32 @@ def main(argv: list[str] | None = None) -> int:
         help="Fallback complete RIS metadata overlay, used only when the source DOCX has no embedded EndNote records.",
     )
     start_parser.set_defaults(func=start)
+
+    run_parser = subparsers.add_parser("run", help="Run the complete start -> agent workflow -> finalize pipeline.")
+    run_parser.add_argument("source_docx")
+    run_parser.add_argument("--output-stem")
+    run_parser.add_argument("--run-dir")
+    run_parser.add_argument(
+        "--metadata-ris",
+        help="Fallback complete RIS metadata overlay, used only when the source DOCX has no embedded EndNote records.",
+    )
+    run_parser.add_argument(
+        "--agent-command",
+        help=(
+            "Command that runs the required revision agents. If the command string contains placeholders, "
+            "{manifest}, {run_dir}, {source_docx}, {source_markdown}, {revised_markdown}, {comments_markdown}, "
+            "{comments_json}, {audit_file}, and {asta_requests} are expanded. Otherwise the launcher appends "
+            "--manifest and --run-dir. May also be set with PANDOC_REVISION_AGENT_COMMAND."
+        ),
+    )
+    run_parser.add_argument(
+        "--asta-command",
+        help=(
+            "Command used during finalize to resolve pending agent_workflow/asta_requests.json entries. "
+            "May also be set with PANDOC_REVISION_ASTA_COMMAND."
+        ),
+    )
+    run_parser.set_defaults(func=run_complete)
 
     finalize_parser = subparsers.add_parser("finalize", help="Compile revised markdown and finalize DOCX/RIS.")
     finalize_parser.add_argument("manifest")

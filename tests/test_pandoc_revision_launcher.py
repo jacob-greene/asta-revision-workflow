@@ -10,9 +10,11 @@ from citeproc_endnote_uv.pandoc_revision_launcher import (
     ensure_inside_run_dir,
     pandoc_docx_to_markdown,
     pandoc_markdown_to_docx,
+    run_agent_workflow_command,
     resolve_asta_requests,
     sha256,
     validate_agent_workflow,
+    workflow_agent_command_parts,
     write_agent_inputs,
     write_asta_request_template,
     write_agent_workflow_tasks,
@@ -312,3 +314,57 @@ def test_resolve_asta_requests_runs_command_and_combines_ris(tmp_path):
     assert ledger["requests"][0]["status"] == "resolved"
     additions = json.loads((tmp_path / "asta_reference_additions.json").read_text(encoding="utf-8"))
     assert additions["addition_record_count"] == 1
+
+
+def test_workflow_agent_command_parts_expand_placeholders(tmp_path):
+    revised, manifest = agent_manifest(tmp_path)
+    manifest["agent_workflow"] = {
+        "audit_file": "agent_workflow/agent_workflow_audit.json",
+        "asta_requests": "agent_workflow/asta_requests.json",
+    }
+    manifest_path = tmp_path / "manifest.json"
+
+    command = workflow_agent_command_parts(
+        "agent-runner --manifest {manifest} --audit {audit_file} --asta {asta_requests} --revised {revised_markdown}",
+        tmp_path,
+        manifest_path,
+        manifest,
+    )
+
+    assert command == [
+        "agent-runner",
+        "--manifest",
+        str(manifest_path),
+        "--audit",
+        str(tmp_path / "agent_workflow/agent_workflow_audit.json"),
+        "--asta",
+        str(tmp_path / "agent_workflow/asta_requests.json"),
+        "--revised",
+        str(tmp_path / revised.name),
+    ]
+
+
+def test_workflow_agent_command_parts_append_manifest_and_run_dir(tmp_path):
+    revised, manifest = agent_manifest(tmp_path)
+    manifest["agent_workflow"] = {}
+    manifest_path = tmp_path / "manifest.json"
+
+    command = workflow_agent_command_parts("agent-runner --strict", tmp_path, manifest_path, manifest)
+
+    assert command == ["agent-runner", "--strict", "--manifest", str(manifest_path), "--run-dir", str(tmp_path)]
+
+
+def test_agent_workflow_command_requires_configured_runner(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(command):
+        calls.append(command)
+
+    monkeypatch.setattr("citeproc_endnote_uv.pandoc_revision_launcher.run", fake_run)
+    manifest_path = tmp_path / "manifest.json"
+
+    with pytest.raises(SystemExit, match="requires an agent workflow command"):
+        run_agent_workflow_command(tmp_path, manifest_path, None)
+
+    assert calls == []
+
