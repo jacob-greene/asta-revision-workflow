@@ -71,8 +71,8 @@ Every revision pass must run all four roles below in order. Do not skip directly
 - Prefer precise caveats over unsupported citations.
 - Do not introduce broad synthesis claims during implementation unless the rigor critique step explicitly approves the claim and identifies the supporting citations.
 - Do not rebuild prose from older TeX or Markdown. If EndNote temporary citations are required, first synchronize the exact revised `.docx` content into a fresh citation source.
-- Every pass must emit a revised `.docx` and a complete matching `.ris` generated from the full Word reference list used for that pass. The RIS must include every numbered reference in the Word bibliography, not only cited records, and the exporter must fail rather than silently skip malformed entries.
-- Do not merge, backfill, or repair the pass RIS from an archive RIS or another pass. If the current Word reference list lacks required metadata, fix the reference entry in the current Word-derived raw DOCX and regenerate the RIS from that DOCX.
+- Every pass must emit a revised `.docx` and a matching `.ris` generated from the full numbered reference list in the current source Word document for that pass. The RIS must include every numbered reference in that Word bibliography, not only cited records, and the exporter must fail rather than silently skip malformed entries.
+- Do not merge, backfill, or repair the pass RIS from an archive RIS, another pass, BibTeX, EndNote library, or web/Asta lookup. If the current Word reference list lacks required metadata, fix the reference entry in the Word document itself before launching the workflow, then regenerate from that Word document.
 - If the user requests a writing-methods or AI-use statement, append it after the numbered bibliography as a non-reference methods note and link to the run manifest or workflow documentation. The RIS exporter must stop at the end of the numbered bibliography so this statement cannot be absorbed into the last reference.
 - Keep paragraph length appropriate for the document; for dense scientific prose, 4-5 sentences is a useful default ceiling.
 - Before converting numeric citations to EndNote temporary citations, run the modified-statement support check on the revised raw DOCX. Any modified sentence without a same-sentence or adjacent citation must be resolved by checking nearby existing citations, adding a citation, softening/removing the claim, or requerying literature tools for targeted evidence.
@@ -108,7 +108,7 @@ docx-word-sanity
 docx-endnote-ris-sync
 ```
 
-`docx-reference-list-to-ris` uses the current Word reference list as the only citation authority. This ensures references manually added by a collaborator in Word propagate into the RIS without pulling metadata from stale external files.
+`docx-reference-list-to-ris` uses the current source Word reference list as the only citation authority. The launcher validates that the paired RIS is exactly the canonical RIS derived from that source Word document, so archive-filled metadata and older records fail provenance checks.
 
 `docx-numeric-to-endnote-temp` converts numeric superscript citations into EndNote temporary citations. Pass `--ris` so citation metadata comes from the complete paired RIS rather than a lossy Word reference parse. When two distinct references share the same first author and year, the temporary citation includes the title so EndNote matching is unique. Duplicate entries for the same paper remain concise.
 

@@ -3,8 +3,10 @@ from citeproc_endnote_uv.docx_reference_list_to_ris import (
     export_ris,
     parse_reference,
     split_reference_entries,
+    validate_ris_matches_docx,
     write_record,
 )
+import pytest
 from zipfile import ZIP_DEFLATED, ZipFile
 from xml.etree import ElementTree as ET
 
@@ -97,6 +99,32 @@ def test_reference_export_stops_before_appended_methods_note(tmp_path):
     ris = output.read_text(encoding="utf-8")
     assert "TI  - Example title" in ris
     assert "AI use" not in ris
+
+
+def test_ris_provenance_check_requires_current_docx_metadata(tmp_path):
+    source = tmp_path / "source.docx"
+    output = tmp_path / "refs.ris"
+    document_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Main text.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>1.Cao, R., and Zhang, Y. (2004). Example title. Molecular Cell 15, 57-67.</w:t></w:r></w:p>
+  </w:body>
+</w:document>
+"""
+    with ZipFile(source, "w", ZIP_DEFLATED) as zf:
+        zf.writestr("word/document.xml", document_xml)
+
+    export_ris(source, output)
+
+    assert validate_ris_matches_docx(source, output) == 1
+
+    output.write_text(
+        output.read_text(encoding="utf-8").replace("TI  - Example title", "TI  - Archive-filled title"),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="RIS provenance check failed"):
+        validate_ris_matches_docx(source, output)
 
 
 def test_end_year_entry_with_ampersand_author_list_parses_title():

@@ -230,7 +230,7 @@ def write_record(reference: Reference) -> list[str]:
     return lines
 
 
-def export_ris(source_docx: Path, output_ris: Path) -> int:
+def references_from_docx(source_docx: Path) -> list[Reference]:
     references: list[Reference] = []
     failed: list[tuple[int, str]] = []
     for number, entry in split_reference_entries(reference_text_from_docx(source_docx)):
@@ -244,11 +244,42 @@ def export_ris(source_docx: Path, output_ris: Path) -> int:
         details = "\n".join(f"{number}. {snippet}" for number, snippet in failed[:20])
         raise RuntimeError(f"Could not parse {len(failed)} reference entries:\n{details}")
 
+    return references
+
+
+def ris_text_from_references(references: list[Reference]) -> str:
     records: list[str] = []
     for reference in references:
         records.extend(write_record(reference))
         records.append("")
-    output_ris.write_text("\n".join(records), encoding="utf-8")
+    return "\n".join(records)
+
+
+def canonical_ris_text_from_docx(source_docx: Path) -> str:
+    return ris_text_from_references(references_from_docx(source_docx))
+
+
+def normalize_ris_text(text: str) -> str:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text.strip() + "\n"
+
+
+def validate_ris_matches_docx(source_docx: Path, ris_path: Path) -> int:
+    references = references_from_docx(source_docx)
+    expected = normalize_ris_text(ris_text_from_references(references))
+    observed = normalize_ris_text(ris_path.read_text(encoding="utf-8"))
+    if observed != expected:
+        raise RuntimeError(
+            "RIS provenance check failed: paired RIS must be derived only from the current Word DOCX "
+            "reference list. Regenerate it with docx-reference-list-to-ris using this DOCX; do not "
+            "backfill from archive RIS files, older runs, BibTeX, or external citation libraries."
+        )
+    return len(references)
+
+
+def export_ris(source_docx: Path, output_ris: Path) -> int:
+    references = references_from_docx(source_docx)
+    output_ris.write_text(ris_text_from_references(references), encoding="utf-8")
     return len(references)
 
 
@@ -256,9 +287,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source_docx")
     parser.add_argument("output_ris")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Validate that OUTPUT_RIS is exactly the canonical RIS derived from SOURCE_DOCX.",
+    )
     args = parser.parse_args()
-    count = export_ris(Path(args.source_docx), Path(args.output_ris))
-    print(f"Wrote {count} records to {args.output_ris}")
+    if args.check:
+        count = validate_ris_matches_docx(Path(args.source_docx), Path(args.output_ris))
+        print(f"PASS: {args.output_ris} is derived only from {args.source_docx} ({count} records).")
+    else:
+        count = export_ris(Path(args.source_docx), Path(args.output_ris))
+        print(f"Wrote {count} records to {args.output_ris}")
     return 0
 
 

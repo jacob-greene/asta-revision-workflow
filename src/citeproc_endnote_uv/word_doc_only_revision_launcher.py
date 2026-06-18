@@ -43,8 +43,8 @@ REVIEWER_TASKS = {
     ),
     "citation_ris_reviewer.md": (
         "Review citation support and bibliography integrity. Check that each modified statement is supported by "
-        "same/adjacent citations, that citation numbers map to the intended claims, and that the paired RIS has "
-        "complete author metadata without et-al placeholders or missing AU fields."
+        "same/adjacent citations, that citation numbers map to the intended claims, and that the paired RIS is "
+        "derived only from the current source Word DOCX reference list, with no archive RIS/backfill records."
     ),
     "style_reviewer.md": (
         "Review tone and paragraph logic against the scientific-writing skills. Check topic sentences, concise "
@@ -177,47 +177,6 @@ def reference_region_start(paragraphs: list[str]) -> int | None:
     return None
 
 
-def allowed_reference_integrity_changes(source_docx: Path, raw_docx: Path) -> list[int]:
-    """Allow narrow bibliography repairs without opening prose outside comments."""
-
-    source_paragraphs = content_paragraphs(docx_roots(source_docx)[0])
-    raw_paragraphs = content_paragraphs(docx_roots(raw_docx)[0])
-    source_start = reference_region_start(source_paragraphs)
-    raw_start = reference_region_start(raw_paragraphs)
-    if source_start is None or raw_start is None or source_start != raw_start:
-        return []
-
-    allowed: list[int] = []
-    for index, (source_text, raw_text) in enumerate(zip(source_paragraphs, raw_paragraphs), start=1):
-        if index < source_start or source_text == raw_text:
-            continue
-        if REF_START_RE.match(source_text) and REF_START_RE.match(raw_text):
-            allowed.append(index)
-    return allowed
-
-
-def reference_duplicate_surplus(paragraphs: list[str]) -> int:
-    from citeproc_endnote_uv import docx_reference_list_to_ris as word_refs
-
-    seen: set[tuple[str, str]] = set()
-    surplus = 0
-    for paragraph in paragraphs:
-        match = REF_START_RE.match(paragraph)
-        if not match:
-            continue
-        ref = word_refs.parse_reference(int(match.group(1)), paragraph[match.end() :])
-        if ref is None:
-            continue
-        year = ref.year
-        title = ref.title
-        key = (re.sub(r"[^a-z0-9]+", " ", title.lower()).strip(), year)
-        if key in seen and key[0]:
-            surplus += 1
-        else:
-            seen.add(key)
-    return surplus
-
-
 def write_comments_markdown(comments: list[CommentAnchor], output: Path) -> None:
     chunks = []
     for anchor in comments:
@@ -334,6 +293,7 @@ def start(args: argparse.Namespace) -> int:
         "allowed_paragraphs": allowed_paragraphs,
         "reference_count": len(refs),
         "reference_numbers": refs,
+        "citation_source_policy": "current-source-docx-reference-list-only",
         "forbidden_inputs": [
             "archive RIS",
             "external RIS",
@@ -343,6 +303,7 @@ def start(args: argparse.Namespace) -> int:
             "prior response file",
             "cached Asta evidence",
             "hard-coded replacement paragraphs from older passes",
+            "citation records copied from older Word/RIS outputs",
         ],
         "generated_artifacts": {
             "comments_markdown": comments_md.name,
@@ -439,7 +400,7 @@ def finalize(args: argparse.Namespace) -> int:
     changed, inserted, source_count, raw_count = paragraph_differences(source_docx, raw_docx)
     allowed = set(manifest["allowed_paragraphs"])
     appended_paragraphs = set(range(source_count + 1, raw_count + 1))
-    reference_integrity = set(allowed_reference_integrity_changes(source_docx, raw_docx))
+    reference_integrity: set[int] = set()
     source_paragraphs = content_paragraphs(docx_roots(source_docx)[0])
     raw_paragraphs = content_paragraphs(docx_roots(raw_docx)[0])
     source_ref_start = reference_region_start(source_paragraphs)
@@ -462,9 +423,7 @@ def finalize(args: argparse.Namespace) -> int:
         for index in changed
         if index not in allowed
         and index not in appended_paragraphs
-        and index not in reference_integrity
         and index not in citation_only
-        and index not in reference_region
     ]
     unexpected_insertions = sorted(set(inserted) - appended_paragraphs - allowed_insertions)
     if unexpected_insertions:
@@ -472,11 +431,14 @@ def finalize(args: argparse.Namespace) -> int:
     if unexpected:
         raise SystemExit(f"Unexpected paragraph changes outside Word-comment scope: {unexpected}")
 
-    run(["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(raw_docx), str(ris)])
-    raw_reference_count = len(reference_numbers(content_paragraphs(docx_roots(raw_docx)[0])))
-    allowed_reference_deficit = reference_duplicate_surplus(source_paragraphs)
-    if manifest["reference_count"] and raw_reference_count + allowed_reference_deficit < manifest["reference_count"]:
-        raise SystemExit("Revised raw DOCX has fewer numbered references than the source DOCX.")
+    raw_reference_numbers = reference_numbers(content_paragraphs(docx_roots(raw_docx)[0]))
+    if raw_reference_numbers != manifest["reference_numbers"]:
+        raise SystemExit(
+            "Revised raw DOCX reference numbers differ from the source Word DOCX. "
+            "Citations and RIS must be derived only from the current source Word reference list."
+        )
+    run(["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(source_docx), str(ris)])
+    run(["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(source_docx), str(ris), "--check"])
     paragraph_arg = ",".join(str(index) for index in sorted(allowed)) if allowed else None
     support_cmd = [
         "python3",
@@ -507,6 +469,7 @@ def finalize(args: argparse.Namespace) -> int:
     run(["unzip", "-t", str(final_docx)])
     run(["python3", str(SCRIPT_DIR / "docx_word_sanity.py"), str(final_docx)])
     run(["python3", str(SCRIPT_DIR / "docx_endnote_ris_sync.py"), str(final_docx), str(ris), "--allow-title-prefix"])
+    run(["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(source_docx), str(ris), "--check"])
 
     stale = {path.name: stale_marker_counts(path) for path in (raw_docx, final_docx)}
     if any(count for counts in stale.values() for count in counts.values()):
@@ -523,6 +486,8 @@ def finalize(args: argparse.Namespace) -> int:
         "citation_only_paragraphs": sorted(citation_only),
         "reference_region_paragraphs": sorted(reference_region),
         "reference_integrity_paragraphs": sorted(reference_integrity),
+        "citation_source_policy": manifest.get("citation_source_policy", "current-source-docx-reference-list-only"),
+        "citation_source_docx": source_docx.name,
         "final_docx": final_docx.name,
         "ris": ris.name,
         "reviewers": manifest.get("reviewers", {}),
