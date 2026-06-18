@@ -331,14 +331,11 @@ def finalize(args: argparse.Namespace) -> int:
             str(final_docx),
             "--ris",
             str(ris),
-            "--short-title-disambiguation",
-            "--title-prefix-words",
-            "7",
         ]
     )
     run(["unzip", "-t", str(final_docx)])
     run(["python3", str(SCRIPT_DIR / "docx_word_sanity.py"), str(final_docx)])
-    run(["python3", str(SCRIPT_DIR / "docx_endnote_ris_sync.py"), str(final_docx), str(ris), "--allow-title-prefix"])
+    run(["python3", str(SCRIPT_DIR / "docx_endnote_ris_sync.py"), str(final_docx), str(ris)])
 
     stale = {path.name: stale_marker_counts(path) for path in (raw_docx, final_docx)}
     if any(count for counts in stale.values() for count in counts.values()):

@@ -179,6 +179,8 @@ def author_list(authors: str) -> list[str]:
         return []
     authors = re.sub(r"\bet\s+al\.?$", "", authors, flags=re.IGNORECASE).strip(" ,")
     authors = re.sub(r"\band\s+others$", "", authors, flags=re.IGNORECASE).strip(" ,")
+    authors = re.sub(r"\s*&\s*", ", ", authors)
+    authors = re.sub(r",?\s+and\s+", ", ", authors, flags=re.IGNORECASE)
     chunks = [chunk.strip() for chunk in authors.split(",")]
     parsed: list[str] = []
     index = 0

@@ -29,6 +29,17 @@ def test_author_list_preserves_all_named_authors():
     ]
 
 
+def test_author_list_handles_ampersand_joined_authors():
+    assert author_list("Cao, R. & Zhang, Y.") == ["Cao, R.", "Zhang, Y."]
+    assert author_list("Pasini, D., Bracken, A.P., Jensen, M.R., Lazzerini Denchi, E. & Helin, K.") == [
+        "Pasini, D.",
+        "Bracken, A.P.",
+        "Jensen, M.R.",
+        "Lazzerini Denchi, E.",
+        "Helin, K.",
+    ]
+
+
 def test_reference_record_writes_all_authors():
     reference = parse_reference(
         28,
