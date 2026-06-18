@@ -31,6 +31,7 @@ pandoc-word-revision start
         +--> comments markdown/json
         +--> style-reference.docx
         +--> citation_metadata.ris extracted from embedded EndNote fields
+        +--> agent_inputs scoped context and token profile
         +--> agent_workflow tasks and audit template
         |
         v
@@ -76,10 +77,12 @@ This creates a run directory containing `manuscript_v4.source.md`,
 `manuscript_v4.revised.md`, `manuscript_v4.comments.md`,
 `manuscript_v4.comments.json`, `style-reference.docx`,
 `citation_metadata.ris`, `citation_metadata_audit.json`, `agent_workflow/`, and
-a manifest. Word comments and complete citation metadata are extracted directly
-from the DOCX; Pandoc supplies the editable markdown and the Word style
-reference. The `agent_workflow/` directory contains task files, report paths,
-and an audit template that must be completed before finalization.
+a manifest. It also writes `agent_inputs/` and `launcher_profile.json` so each
+agent pass can load a smaller, role-appropriate context. Word comments and
+complete citation metadata are extracted directly from the DOCX; Pandoc supplies
+the editable markdown and the Word style reference. The `agent_workflow/`
+directory contains task files, report paths, and an audit template that must be
+completed before finalization.
 
 ## Install
 
@@ -140,6 +143,13 @@ workflow audit. It then generates the paired RIS from the current recompiled
 reference list, uses the run-local metadata overlay to restore complete
 author/DOI fields, converts numeric citations to EndNote temporary citations,
 and runs sanity/sync checks.
+
+`launcher_profile.json` records per-step launcher timings, artifact sizes, and
+approximate token counts. `agent_inputs/agent_input_manifest.json` names the
+minimal recommended input files for each agent pass. Non-citation passes avoid
+loading `citation_metadata.ris` by default, and comment-scoped input files let
+planning, rigor, and tone reviewers inspect only the Word-comment anchors unless
+they need the full markdown.
 
 Citation handling is deterministic for a fixed run directory. The recompiled
 Word document defines which references exist and their numbering/order. The

@@ -12,7 +12,10 @@ from citeproc_endnote_uv.pandoc_revision_launcher import (
     pandoc_markdown_to_docx,
     sha256,
     validate_agent_workflow,
+    write_agent_inputs,
     write_agent_workflow_tasks,
+    write_json,
+    write_launcher_profile,
 )
 
 
@@ -76,8 +79,9 @@ def agent_manifest(tmp_path):
         "workflow": "pandoc-word-revision",
         "source_docx": "source.docx",
         "source_sha256": "source-hash",
+        "pandoc": {"reference_doc": "style-reference.docx"},
         "comments": {"markdown": "draft.comments.md", "json": "draft.comments.json", "count": 1},
-        "citation_policy": {"metadata_overlay_ris": "citation_metadata.ris"},
+        "citation_policy": {"metadata_overlay_ris": "citation_metadata.ris", "metadata_audit": "citation_metadata_audit.json"},
         "generated_artifacts": {
             "source_markdown": "draft.source.md",
             "revised_markdown": revised.name,
@@ -87,6 +91,24 @@ def agent_manifest(tmp_path):
             "ris": "draft.ris",
         },
     }
+
+
+def write_agent_fixture_files(tmp_path, manifest):
+    (tmp_path / manifest["comments"]["markdown"]).write_text("# Comments\n", encoding="utf-8")
+    write_json(
+        tmp_path / manifest["comments"]["json"],
+        [
+            {
+                "comment_id": "7",
+                "comment_text": "Clarify this claim.",
+                "paragraph_index": 3,
+                "paragraph_text": "This source paragraph needs a more precise claim.",
+                "anchored_text": "more precise claim",
+            }
+        ],
+    )
+    (tmp_path / manifest["citation_policy"]["metadata_overlay_ris"]).write_text("TY  - JOUR\nER  -\n", encoding="utf-8")
+    (tmp_path / manifest["generated_artifacts"]["source_markdown"]).write_text("Full source markdown.\n", encoding="utf-8")
 
 
 def completed_agent_audit(manifest, revised):
@@ -115,7 +137,11 @@ def completed_agent_audit(manifest, revised):
 
 
 def test_agent_workflow_scaffold_creates_tasks_and_template(tmp_path):
-    _revised, manifest = agent_manifest(tmp_path)
+    revised, manifest = agent_manifest(tmp_path)
+    write_agent_fixture_files(tmp_path, manifest)
+    manifest["agent_inputs"] = write_agent_inputs(
+        tmp_path, manifest, tmp_path / manifest["generated_artifacts"]["source_markdown"], revised
+    )
 
     workflow = write_agent_workflow_tasks(tmp_path, manifest)
 
@@ -126,6 +152,46 @@ def test_agent_workflow_scaffold_creates_tasks_and_template(tmp_path):
     first_task = (tmp_path / workflow["task_files"][0]).read_text(encoding="utf-8")
     assert "Required Checks" in first_task
     assert "draft.revised.md" in first_task
+    assert "Recommended Minimal Inputs" in first_task
+    assert "citation_metadata.ris" in first_task
+
+
+def test_agent_inputs_use_comment_scope_and_avoid_ris_for_tone(tmp_path):
+    revised, manifest = agent_manifest(tmp_path)
+    write_agent_fixture_files(tmp_path, manifest)
+
+    agent_inputs = write_agent_inputs(tmp_path, manifest, tmp_path / manifest["generated_artifacts"]["source_markdown"], revised)
+
+    scoped = (tmp_path / agent_inputs["comment_scoped_source_markdown"]).read_text(encoding="utf-8")
+    assert "Clarify this claim." in scoped
+    assert "This source paragraph needs" in scoped
+    tone_policy = agent_inputs["pass_input_policy"]["tone_and_concision"]
+    assert "citation_metadata.ris" in tone_policy["avoid_by_default"]
+
+
+def test_launcher_profile_estimates_scoped_token_savings(tmp_path):
+    revised, manifest = agent_manifest(tmp_path)
+    write_agent_fixture_files(tmp_path, manifest)
+    manifest["agent_inputs"] = write_agent_inputs(
+        tmp_path, manifest, tmp_path / manifest["generated_artifacts"]["source_markdown"], revised
+    )
+    manifest["agent_workflow"] = write_agent_workflow_tasks(tmp_path, manifest)
+    write_json(tmp_path / "manifest.json", manifest)
+    profile_path = tmp_path / "launcher_profile.json"
+
+    write_launcher_profile(
+        profile_path,
+        tmp_path,
+        tmp_path / "source.docx",
+        manifest,
+        [{"step": "example", "seconds": 0.1}],
+        {"embedded_record_count": 1},
+        1,
+    )
+
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    assert profile["agent_pass_estimates"]
+    assert profile["four_pass_estimated_token_savings"] >= 0
 
 
 def test_agent_workflow_validation_requires_audit(tmp_path):

@@ -17,7 +17,9 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -76,11 +78,17 @@ AGENT_WORKFLOW_PASSES = [
         ),
     },
 ]
-
-
 def run(command: list[str]) -> None:
     print("+ " + " ".join(command))
     subprocess.run(command, check=True)
+
+
+@contextmanager
+def timed_step(profile: list[dict[str, object]] | None, name: str):
+    start = time.perf_counter()
+    yield
+    if profile is not None:
+        profile.append({"step": name, "seconds": round(time.perf_counter() - start, 4)})
 
 
 def endnote_conversion_command(raw_docx: Path, output_docx: Path, ris: Path) -> list[str]:
@@ -178,6 +186,214 @@ def relative_to_run(path: Path, run_dir: Path) -> str:
     return str(path.relative_to(run_dir))
 
 
+def approx_text_tokens(text: str) -> int:
+    return (len(text) + 3) // 4
+
+
+def artifact_profile(path: Path, run_dir: Path, name: str) -> dict[str, object]:
+    size = path.stat().st_size if path.exists() else 0
+    suffix = path.suffix.lower()
+    tokens = 0
+    if path.exists() and suffix not in {".docx", ".png", ".jpg", ".jpeg", ".gif", ".pdf"}:
+        tokens = approx_text_tokens(path.read_text(encoding="utf-8", errors="ignore"))
+    return {
+        "artifact": name,
+        "path": relative_to_run(path, run_dir),
+        "bytes": size,
+        "approx_tokens": tokens,
+    }
+
+
+def comment_scope_from_json(comments_json: Path, fallback_markdown: Path) -> str:
+    comments = json.loads(comments_json.read_text(encoding="utf-8"))
+    if not comments:
+        return fallback_markdown.read_text(encoding="utf-8")
+    chunks: list[str] = []
+    for comment in comments:
+        chunks.append(
+            "\n".join(
+                [
+                    f"## Comment {comment.get('comment_id', '')}",
+                    "",
+                    f"Paragraph: {comment.get('paragraph_index', '')}",
+                    "",
+                    "Comment:",
+                    str(comment.get("comment_text", "")).strip(),
+                    "",
+                    "Anchored text:",
+                    str(comment.get("anchored_text", "")).strip(),
+                    "",
+                    "Source paragraph:",
+                    str(comment.get("paragraph_text", "")).strip(),
+                ]
+            )
+        )
+    return "\n\n".join(chunks).strip() + "\n"
+
+
+def write_agent_inputs(run_dir: Path, manifest: dict, source_markdown: Path, revised_markdown: Path) -> dict[str, object]:
+    inputs_dir = run_dir / "agent_inputs"
+    inputs_dir.mkdir(exist_ok=True)
+    comments_md = run_dir / manifest["comments"]["markdown"]
+    comments_json = run_dir / manifest["comments"]["json"]
+    citation_metadata = run_dir / manifest["citation_policy"]["metadata_overlay_ris"]
+    source_scoped = inputs_dir / "comment_scoped_source.md"
+    revised_scoped = inputs_dir / "comment_scoped_revised.md"
+    agent_input_manifest = inputs_dir / "agent_input_manifest.json"
+
+    scoped_text = comment_scope_from_json(comments_json, source_markdown)
+    source_scoped.write_text(scoped_text, encoding="utf-8")
+    revised_scoped.write_text(
+        scoped_text,
+        encoding="utf-8",
+    )
+
+    common = [
+        relative_to_run(agent_input_manifest, run_dir),
+        relative_to_run(comments_md, run_dir),
+        relative_to_run(source_scoped, run_dir),
+        relative_to_run(revised_scoped, run_dir),
+        "manifest.json",
+    ]
+    passes = {
+        "comment_interpretation_and_revision_planning": {
+            "recommended_inputs": common + [relative_to_run(comments_json, run_dir)],
+            "avoid_by_default": [relative_to_run(citation_metadata, run_dir)],
+        },
+        "evidence_and_specificity": {
+            "recommended_inputs": common + [relative_to_run(comments_json, run_dir), relative_to_run(citation_metadata, run_dir)],
+            "avoid_by_default": [],
+        },
+        "rigor_critique": {
+            "recommended_inputs": common,
+            "avoid_by_default": [relative_to_run(citation_metadata, run_dir)],
+        },
+        "tone_and_concision": {
+            "recommended_inputs": common,
+            "avoid_by_default": [relative_to_run(citation_metadata, run_dir), relative_to_run(comments_json, run_dir)],
+        },
+    }
+    data = {
+        "purpose": "Prefer these scoped inputs for agent passes; load full markdown or citation_metadata.ris only when needed.",
+        "scoped_source_markdown": relative_to_run(source_scoped, run_dir),
+        "scoped_revised_markdown": relative_to_run(revised_scoped, run_dir),
+        "full_source_markdown": manifest["generated_artifacts"]["source_markdown"],
+        "full_revised_markdown": manifest["generated_artifacts"]["revised_markdown"],
+        "comments_markdown": manifest["comments"]["markdown"],
+        "comments_json": manifest["comments"]["json"],
+        "citation_metadata_ris": manifest["citation_policy"]["metadata_overlay_ris"],
+        "passes": passes,
+    }
+    write_json(agent_input_manifest, data)
+    return {
+        "directory": relative_to_run(inputs_dir, run_dir),
+        "manifest": relative_to_run(agent_input_manifest, run_dir),
+        "comment_scoped_source_markdown": relative_to_run(source_scoped, run_dir),
+        "comment_scoped_revised_markdown": relative_to_run(revised_scoped, run_dir),
+        "pass_input_policy": passes,
+    }
+
+
+def write_launcher_profile(
+    path: Path,
+    run_dir: Path,
+    source: Path,
+    manifest: dict,
+    steps: list[dict[str, object]],
+    metadata_audit: dict[str, object],
+    comment_count: int,
+) -> None:
+    artifacts = manifest["generated_artifacts"]
+    citation_policy = manifest["citation_policy"]
+    comments = manifest["comments"]
+    tracked_paths = {
+        "source_docx_copy": run_dir / manifest["source_docx"],
+        "style_reference_docx": run_dir / manifest["pandoc"]["reference_doc"],
+        "source_markdown": run_dir / artifacts["source_markdown"],
+        "revised_markdown": run_dir / artifacts["revised_markdown"],
+        "comment_scoped_source_markdown": run_dir / manifest["agent_inputs"]["comment_scoped_source_markdown"],
+        "comment_scoped_revised_markdown": run_dir / manifest["agent_inputs"]["comment_scoped_revised_markdown"],
+        "comments_markdown": run_dir / comments["markdown"],
+        "comments_json": run_dir / comments["json"],
+        "citation_metadata_ris": run_dir / citation_policy["metadata_overlay_ris"],
+        "citation_metadata_audit": run_dir / citation_policy["metadata_audit"],
+        "agent_input_manifest": run_dir / manifest["agent_inputs"]["manifest"],
+        "agent_audit_template": run_dir / manifest["agent_workflow"]["audit_template"],
+        "manifest": run_dir / "manifest.json",
+    }
+    for index, task in enumerate(manifest["agent_workflow"]["task_files"], start=1):
+        tracked_paths[f"agent_task_{index}"] = run_dir / task
+
+    artifact_rows = [
+        artifact_profile(artifact_path, run_dir, name)
+        for name, artifact_path in tracked_paths.items()
+        if artifact_path.exists()
+    ]
+    row_by_name = {row["artifact"]: row for row in artifact_rows}
+    full_context_names = {
+        "manifest",
+        "source_markdown",
+        "revised_markdown",
+        "comments_markdown",
+        "comments_json",
+        "citation_metadata_ris",
+    }
+    scoped_common_names = {
+        "manifest",
+        "comment_scoped_source_markdown",
+        "comment_scoped_revised_markdown",
+        "comments_markdown",
+        "agent_input_manifest",
+    }
+    full_context_tokens = sum(int(row_by_name[name]["approx_tokens"]) for name in full_context_names if name in row_by_name)
+    scoped_common_tokens = sum(int(row_by_name[name]["approx_tokens"]) for name in scoped_common_names if name in row_by_name)
+
+    pass_estimates = []
+    for workflow_pass in AGENT_WORKFLOW_PASSES:
+        input_policy = manifest["agent_inputs"]["pass_input_policy"][workflow_pass["name"]]
+        tokens = 0
+        input_rows = []
+        for input_path in input_policy["recommended_inputs"]:
+            matching = next((row for row in artifact_rows if row["path"] == input_path), None)
+            if matching is not None:
+                tokens += int(matching["approx_tokens"])
+                input_rows.append(matching)
+        task_path = f"agent_workflow/tasks/{workflow_pass['name']}.md"
+        task_row = next((row for row in artifact_rows if row["path"] == task_path), None)
+        if task_row is not None:
+            tokens += int(task_row["approx_tokens"])
+        pass_estimates.append(
+            {
+                "pass": workflow_pass["name"],
+                "recommended_input_tokens": tokens,
+                "full_context_tokens_if_loaded": full_context_tokens + (int(task_row["approx_tokens"]) if task_row else 0),
+                "estimated_token_savings": max(
+                    0,
+                    (full_context_tokens + (int(task_row["approx_tokens"]) if task_row else 0)) - tokens,
+                ),
+            }
+        )
+
+    profile = {
+        "run_dir": str(run_dir),
+        "source_docx": str(source),
+        "steps": steps,
+        "total_profiled_seconds": round(sum(float(item["seconds"]) for item in steps), 4),
+        "embedded_record_count": metadata_audit.get("embedded_record_count"),
+        "comment_count": comment_count,
+        "artifact_rows": artifact_rows,
+        "generated_text_artifact_tokens": sum(int(row["approx_tokens"]) for row in artifact_rows),
+        "full_context_agent_tokens": full_context_tokens,
+        "scoped_common_agent_tokens": scoped_common_tokens,
+        "agent_pass_estimates": pass_estimates,
+        "four_pass_full_context_total_tokens": sum(int(item["full_context_tokens_if_loaded"]) for item in pass_estimates),
+        "four_pass_recommended_total_tokens": sum(int(item["recommended_input_tokens"]) for item in pass_estimates),
+        "four_pass_estimated_token_savings": sum(int(item["estimated_token_savings"]) for item in pass_estimates),
+        "billing_note": "Launcher uses local tools only and makes no LLM/API calls; token values are approximate prompt-size estimates.",
+    }
+    write_json(path, profile)
+
+
 def write_agent_workflow_tasks(run_dir: Path, manifest: dict) -> dict[str, object]:
     workflow_dir = run_dir / "agent_workflow"
     tasks_dir = workflow_dir / "tasks"
@@ -190,6 +406,7 @@ def write_agent_workflow_tasks(run_dir: Path, manifest: dict) -> dict[str, objec
     passes: list[dict[str, object]] = []
     artifacts = manifest["generated_artifacts"]
     for workflow_pass in AGENT_WORKFLOW_PASSES:
+        input_policy = manifest.get("agent_inputs", {}).get("pass_input_policy", {}).get(workflow_pass["name"], {})
         task_path = tasks_dir / f"{workflow_pass['name']}.md"
         report_path = reports_dir / str(workflow_pass["report"])
         task_path.write_text(
@@ -202,11 +419,17 @@ def write_agent_workflow_tasks(run_dir: Path, manifest: dict) -> dict[str, objec
                     "## Required Inputs",
                     f"- Manifest: `manifest.json`",
                     f"- Source DOCX: `{manifest['source_docx']}`",
-                    f"- Source markdown: `{artifacts['source_markdown']}`",
-                    f"- Revised markdown: `{artifacts['revised_markdown']}`",
+                    f"- Full source markdown, only if needed: `{artifacts['source_markdown']}`",
+                    f"- Full revised markdown, only if needed: `{artifacts['revised_markdown']}`",
                     f"- Comments markdown: `{manifest['comments']['markdown']}`",
                     f"- Comments JSON: `{manifest['comments']['json']}`",
-                    f"- Citation metadata RIS: `{manifest['citation_policy']['metadata_overlay_ris']}`",
+                    f"- Citation metadata RIS, only if needed: `{manifest['citation_policy']['metadata_overlay_ris']}`",
+                    "",
+                    "## Recommended Minimal Inputs",
+                    *[f"- `{path}`" for path in input_policy.get("recommended_inputs", [])],
+                    "",
+                    "## Avoid Loading By Default",
+                    *[f"- `{path}`" for path in input_policy.get("avoid_by_default", [])],
                     "",
                     "## Required Checks",
                     *[f"- `{check}`" for check in workflow_pass["required_checks"]],
@@ -353,6 +576,7 @@ def pandoc_markdown_to_docx(markdown: Path, output_docx: Path, reference_docx: P
 
 
 def start(args: argparse.Namespace) -> int:
+    profile_steps: list[dict[str, object]] = []
     require_pandoc()
     source = Path(args.source_docx).resolve()
     require_docx(source)
@@ -373,14 +597,17 @@ def start(args: argparse.Namespace) -> int:
     raw_docx = run_dir / f"{output_stem}.raw.docx"
     final_docx = run_dir / f"{output_stem}.docx"
     ris = run_dir / f"{output_stem}.ris"
+    launcher_profile = run_dir / "launcher_profile.json"
 
-    shutil.copy2(source, source_copy)
-    shutil.copy2(source, style_reference)
+    with timed_step(profile_steps, "copy_source_and_style_reference"):
+        shutil.copy2(source, source_copy)
+        shutil.copy2(source, style_reference)
 
     metadata_ris = run_dir / "citation_metadata.ris"
     metadata_audit_path = run_dir / "citation_metadata_audit.json"
-    metadata_audit = export_embedded_endnote_ris(source_copy, metadata_ris)
-    metadata_audit["source"] = "embedded-endnote-fields"
+    with timed_step(profile_steps, "extract_embedded_endnote_metadata_to_ris"):
+        metadata_audit = export_embedded_endnote_ris(source_copy, metadata_ris)
+        metadata_audit["source"] = "embedded-endnote-fields"
     metadata_ris_name = metadata_ris.name
     metadata_audit_name = metadata_audit_path.name
     if metadata_audit["missing_author_records"]:
@@ -395,11 +622,13 @@ def start(args: argparse.Namespace) -> int:
             raise SystemExit(f"Metadata RIS does not exist: {metadata_source}")
         if metadata_audit["embedded_record_count"]:
             fallback = run_dir / "fallback_external_metadata.ris"
-            shutil.copy2(metadata_source, fallback)
+            with timed_step(profile_steps, "copy_unused_external_metadata_fallback"):
+                shutil.copy2(metadata_source, fallback)
             metadata_audit["fallback_external_metadata_ris"] = fallback.name
             metadata_audit["fallback_external_metadata_used"] = False
         else:
-            shutil.copy2(metadata_source, metadata_ris)
+            with timed_step(profile_steps, "copy_external_metadata_fallback"):
+                shutil.copy2(metadata_source, metadata_ris)
             metadata_audit["source"] = "external-metadata-ris-fallback"
             metadata_audit["fallback_external_metadata_used"] = True
     if not metadata_audit["embedded_record_count"] and not args.metadata_ris:
@@ -408,15 +637,19 @@ def start(args: argparse.Namespace) -> int:
             "complete citation metadata from the current Word file; provide a DOCX with EndNote fields or "
             "an explicit --metadata-ris fallback."
         )
-    write_json(metadata_audit_path, metadata_audit)
+    with timed_step(profile_steps, "write_citation_metadata_audit"):
+        write_json(metadata_audit_path, metadata_audit)
 
-    comments = extract_comments(source_copy)
-    comments_md.write_text(format_markdown(comments), encoding="utf-8")
-    write_json(comments_json, [asdict(comment) for comment in comments])
+    with timed_step(profile_steps, "extract_word_comments"):
+        comments = extract_comments(source_copy)
+        comments_md.write_text(format_markdown(comments), encoding="utf-8")
+        write_json(comments_json, [asdict(comment) for comment in comments])
 
-    run(pandoc_docx_to_markdown(source_copy, markdown, media_dir))
-    if not revised_markdown.exists():
-        shutil.copy2(markdown, revised_markdown)
+    with timed_step(profile_steps, "pandoc_docx_to_markdown"):
+        run(pandoc_docx_to_markdown(source_copy, markdown, media_dir))
+    with timed_step(profile_steps, "seed_revised_markdown"):
+        if not revised_markdown.exists():
+            shutil.copy2(markdown, revised_markdown)
 
     manifest = {
         "workflow": "pandoc-word-revision",
@@ -447,14 +680,41 @@ def start(args: argparse.Namespace) -> int:
             "raw_docx": raw_docx.name,
             "final_docx": final_docx.name,
             "ris": ris.name,
+            "launcher_profile": launcher_profile.name,
         },
     }
-    manifest["agent_workflow"] = write_agent_workflow_tasks(run_dir, manifest)
     manifest_path = run_dir / "manifest.json"
-    write_json(manifest_path, manifest)
+    with timed_step(profile_steps, "write_agent_scoped_inputs"):
+        manifest["agent_inputs"] = write_agent_inputs(run_dir, manifest, markdown, revised_markdown)
+    with timed_step(profile_steps, "write_agent_workflow_scaffold"):
+        manifest["agent_workflow"] = write_agent_workflow_tasks(run_dir, manifest)
+    with timed_step(profile_steps, "write_manifest"):
+        write_json(manifest_path, manifest)
+    profile_start = time.perf_counter()
+    profile_steps.append({"step": "write_launcher_profile", "seconds": 0.0})
+    write_launcher_profile(
+        launcher_profile,
+        run_dir,
+        source,
+        manifest,
+        profile_steps,
+        metadata_audit,
+        len(comments),
+    )
+    profile_steps[-1]["seconds"] = round(time.perf_counter() - profile_start, 4)
+    write_launcher_profile(
+        launcher_profile,
+        run_dir,
+        source,
+        manifest,
+        profile_steps,
+        metadata_audit,
+        len(comments),
+    )
 
     print(f"Wrote run directory: {run_dir}")
     print(f"Revise markdown: {revised_markdown}")
+    print(f"Launcher profile: {launcher_profile}")
     print("Required agent workflow tasks:")
     for task in manifest["agent_workflow"]["task_files"]:
         print(f"  - {run_dir / task}")

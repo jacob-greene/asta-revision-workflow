@@ -30,7 +30,7 @@ pandoc-word-revision start commented-draft.docx \
   --output-stem manuscript_v4
 ```
 
-This command creates a run directory, copies the source Word document into it, records the source hash, extracts Word comments, exports the document text/styles to Pandoc markdown, saves `style-reference.docx`, extracts embedded EndNote metadata into `citation_metadata.ris`, creates `agent_workflow/` task files plus an audit template, and writes a manifest naming the permitted generated artifacts for that pass.
+This command creates a run directory, copies the source Word document into it, records the source hash, extracts Word comments, exports the document text/styles to Pandoc markdown, saves `style-reference.docx`, extracts embedded EndNote metadata into `citation_metadata.ris`, creates `agent_inputs/` scoped context files, creates `agent_workflow/` task files plus an audit template, writes `launcher_profile.json`, and writes a manifest naming the permitted generated artifacts for that pass.
 
 Do not use hand-created Markdown exports, archive RIS files, prior response files, or cached evidence as the comment or content source. The only supported Markdown source is the run-local markdown produced by `pandoc-word-revision start` from the current `.docx`.
 
@@ -39,6 +39,8 @@ Do not use hand-created Markdown exports, archive RIS files, prior response file
 Every revision pass must run all four roles below in order. Do not skip directly from comment extraction to implementation, even when the requested change looks mechanical or citation-only. If a pass starts from a draft with no active Word comments, define the revision scope from the user's request, the previous comment-response summary, and the paragraphs changed in the prior pass; then run the same four roles on that explicit scope.
 
 The Pandoc launcher enforces this. Before finalization, `agent_workflow/agent_workflow_audit.json` must exist, must hash the exact `*.revised.md` being finalized, must mark all four passes as completed, and must point to non-empty report files in `agent_workflow/reports/`.
+
+For efficiency, each task file names recommended minimal inputs from `agent_inputs/agent_input_manifest.json`. Planning, rigor, and tone passes should start from the comment-scoped files and avoid loading the full `citation_metadata.ris` unless they need citation details. The evidence pass may load the RIS because citation support is part of its role.
 
 1. Comment interpretation and revision planning agent
    - Read the `*.comments.md` and `*.comments.json` outputs for every Word comment and its surrounding paragraph.
@@ -118,6 +120,15 @@ agent_workflow/reports/comment_plan_report.md
 agent_workflow/reports/evidence_specificity_report.md
 agent_workflow/reports/rigor_critique_report.md
 agent_workflow/reports/tone_concision_report.md
+```
+
+Launcher timing and token estimates are written to:
+
+```text
+launcher_profile.json
+agent_inputs/agent_input_manifest.json
+agent_inputs/comment_scoped_source.md
+agent_inputs/comment_scoped_revised.md
 ```
 
 The finalizer runs:
