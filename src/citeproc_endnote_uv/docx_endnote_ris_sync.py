@@ -129,6 +129,14 @@ def main() -> int:
             if (author_year, title.lower()) not in by_author_year_title:
                 if args.allow_title_prefix:
                     normalized_prefix = normalized_title(title)
+                    exact_matches = [
+                        record
+                        for record in candidates
+                        if normalized_title(record.title) == normalized_prefix
+                    ]
+                    if len(exact_matches) == 1:
+                        matched += 1
+                        continue
                     prefix_matches = [
                         record
                         for record in candidates

@@ -160,16 +160,35 @@ def short_title_key(title: str, max_words: int = 10) -> str:
     return " ".join(prefix)
 
 
+def unique_short_title_key(title: str, peer_titles: list[str], min_words: int = 10) -> str:
+    words = re.findall(r"[A-Za-z0-9]+", title)
+    if not words:
+        return ""
+    start = min(max(1, min_words), len(words))
+    normalized_peers = [normalized_title(peer) for peer in peer_titles if peer]
+    for count in range(start, len(words) + 1):
+        prefix = short_title_key(title, max_words=count)
+        normalized_prefix = normalized_title(prefix)
+        exact_matches = [peer for peer in normalized_peers if peer == normalized_prefix]
+        if len(exact_matches) == 1:
+            return prefix
+        prefix_matches = [peer for peer in normalized_peers if peer.startswith(normalized_prefix)]
+        if len(set(prefix_matches)) <= 1:
+            return prefix
+    return title
+
+
 def temporary_citation_text(
     reference: Reference,
     ambiguous: bool,
     disambiguate_with_title: bool = True,
     short_title_disambiguation: bool = False,
     title_prefix_words: int = 10,
+    title_override: str | None = None,
 ) -> str:
     if disambiguate_with_title and ambiguous and reference.title:
         title = (
-            short_title_key(reference.title, max_words=title_prefix_words)
+            title_override or short_title_key(reference.title, max_words=title_prefix_words)
             if short_title_disambiguation
             else reference.title
         )
@@ -197,6 +216,7 @@ def make_temp_citation(
     disambiguate_with_title: bool = True,
     short_title_disambiguation: bool = False,
     title_prefix_words: int = 10,
+    title_overrides: dict[int, str] | None = None,
 ) -> str:
     parts: list[str] = []
     for number in expand_citation_numbers(text):
@@ -211,6 +231,7 @@ def make_temp_citation(
                     disambiguate_with_title=disambiguate_with_title,
                     short_title_disambiguation=short_title_disambiguation,
                     title_prefix_words=title_prefix_words,
+                    title_override=(title_overrides or {}).get(number),
                 )
             )
     return "{" + "; ".join(parts) + "}"
@@ -426,6 +447,14 @@ def convert(
         for reference in references.values():
             author_year_counts[reference.author_year] = author_year_counts.get(reference.author_year, 0) + 1
         ambiguous_keys = {key for key, count in author_year_counts.items() if count > 1}
+        titles_by_author_year: dict[str, list[str]] = {}
+        for reference in references.values():
+            titles_by_author_year.setdefault(reference.author_year, []).append(reference.title)
+        title_overrides = {
+            number: unique_short_title_key(reference.title, titles_by_author_year.get(reference.author_year, []), title_prefix_words)
+            for number, reference in references.items()
+            if reference.author_year in ambiguous_keys and reference.title
+        }
 
         for paragraph in paragraphs[:ref_index]:
             preceding = ""
@@ -443,6 +472,7 @@ def convert(
                         disambiguate_with_title=disambiguate_with_title,
                         short_title_disambiguation=short_title_disambiguation,
                         title_prefix_words=title_prefix_words,
+                        title_overrides=title_overrides,
                     )
                     if preceding and not preceding[-1].isspace():
                         citation = " " + citation
