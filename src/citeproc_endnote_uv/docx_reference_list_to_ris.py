@@ -220,7 +220,7 @@ def author_list(authors: str) -> list[str]:
     return parsed
 
 
-def write_record(reference: Reference) -> list[str]:
+def write_record(reference: Reference, key: str | None = None) -> list[str]:
     lines = ["TY  - JOUR"]
     if reference.title:
         lines.append(f"TI  - {reference.title}")
@@ -244,7 +244,7 @@ def write_record(reference: Reference) -> list[str]:
         lines.append(f"DO  - {reference.doi}")
     if reference.pmid:
         lines.append(f"AN  - {reference.pmid}")
-    lines.append(f"ID  - {field_key(reference)}")
+    lines.append(f"ID  - {key or field_key(reference)}")
     lines.append("ER  -")
     return lines
 
@@ -268,8 +268,15 @@ def references_from_docx(source_docx: Path) -> list[Reference]:
 
 def ris_text_from_references(references: list[Reference]) -> str:
     records: list[str] = []
+    key_counts: dict[str, int] = {}
     for reference in references:
-        records.extend(write_record(reference))
+        key = field_key(reference)
+        key_counts[key] = key_counts.get(key, 0) + 1
+    for reference in references:
+        key = field_key(reference)
+        if key_counts[key] > 1:
+            key = f"{key}Ref{reference.number}"
+        records.extend(write_record(reference, key=key))
         records.append("")
     return "\n".join(records)
 

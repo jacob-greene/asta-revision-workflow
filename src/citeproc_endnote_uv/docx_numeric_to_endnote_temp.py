@@ -67,6 +67,41 @@ def parse_references(reference_text: str) -> dict[int, Reference]:
     return mapping
 
 
+def reference_blocks(paragraphs: list[ET.Element]) -> list[tuple[int, int, int, int]]:
+    blocks: list[tuple[int, int, int, int]] = []
+    for index, paragraph in enumerate(paragraphs):
+        if not re.match(r"^\s*1\.\s*[A-Z]", text_of(paragraph).strip()):
+            continue
+        end = index
+        last_number = 0
+        max_number = 0
+        count = 0
+        for candidate in paragraphs[index:]:
+            text = re.sub(r"\s+", " ", text_of(candidate).strip())
+            match = REF_START_RE.match(text)
+            if count and not match:
+                break
+            if match:
+                number = int(match.group(1))
+                if count and number <= last_number:
+                    break
+                last_number = number
+                max_number = max(max_number, number)
+                count += 1
+                end += 1
+        if count:
+            blocks.append((index, end, max_number, count))
+    return blocks
+
+
+def selected_reference_block(paragraphs: list[ET.Element]) -> tuple[int, int]:
+    blocks = reference_blocks(paragraphs)
+    if not blocks:
+        raise RuntimeError("Could not locate numbered reference list in DOCX.")
+    start, end, _, _ = max(blocks, key=lambda block: (block[2], block[3]))
+    return start, end
+
+
 def parse_ris_references(path: Path) -> dict[int, Reference]:
     mapping: dict[int, Reference] = {}
     current: dict[str, str] = {}
@@ -431,15 +466,10 @@ def convert(
             raise RuntimeError("word/document.xml has no body")
 
         paragraphs = [p for p in body.findall(f"{W}p") if text_of(p).strip()]
-        ref_index = None
-        for i, paragraph in enumerate(paragraphs):
-            if re.match(r"^\s*1\.\s*[A-Z]", text_of(paragraph).strip()):
-                ref_index = i
-                break
-        if ref_index is None:
-            raise RuntimeError("Could not locate numbered reference list in DOCX.")
+        ref_index, ref_end = selected_reference_block(paragraphs)
+        first_ref_index = min(start for start, _, _, _ in reference_blocks(paragraphs))
 
-        reference_text = " ".join(text_of(p) for p in paragraphs[ref_index:])
+        reference_text = " ".join(text_of(p) for p in paragraphs[ref_index:ref_end])
         references = parse_ris_references(ris) if ris is not None else parse_references(reference_text)
         if not references:
             raise RuntimeError("Could not parse numbered references.")
@@ -456,7 +486,7 @@ def convert(
             if reference.author_year in ambiguous_keys and reference.title
         }
 
-        for paragraph in paragraphs[:ref_index]:
+        for paragraph in paragraphs[:first_ref_index]:
             preceding = ""
             for run in paragraph.findall(f"{W}r"):
                 run_text = text_of(run)
@@ -484,10 +514,19 @@ def convert(
         flatten_endnote_fields(root)
 
         if not keep_references:
-            for paragraph in paragraphs[ref_index:]:
+            for paragraph in paragraphs[first_ref_index:]:
                 parent_children = list(body)
                 if paragraph in parent_children:
                     body.remove(paragraph)
+        else:
+            selected = set(paragraphs[ref_index:ref_end])
+            for start, end, _, _ in reference_blocks(paragraphs):
+                for paragraph in paragraphs[start:end]:
+                    if paragraph in selected:
+                        continue
+                    parent_children = list(body)
+                    if paragraph in parent_children:
+                        body.remove(paragraph)
 
         tree.write(document, encoding="UTF-8", xml_declaration=True)
         remove_endnote_docvars(tmp / "word" / "settings.xml")

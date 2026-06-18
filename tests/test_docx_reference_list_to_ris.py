@@ -2,6 +2,8 @@ from citeproc_endnote_uv.docx_reference_list_to_ris import (
     author_list,
     export_ris,
     parse_reference,
+    ris_text_from_references,
+    Reference as RisReference,
     split_reference_entries,
     validate_ris_matches_docx,
     write_record,
@@ -122,6 +124,17 @@ def test_reference_export_uses_complete_duplicate_reference_block(tmp_path):
 
     assert "TI  - First title" in ris
     assert "TI  - Cell Cycle- and Chaperone-Mediated Regulation of H3K56ac Incorporation in Yeast" in ris
+
+
+def test_duplicate_ris_ids_are_suffixed_with_reference_number():
+    references = [
+        RisReference(43, "Tie, F.", "2012", "Histone Demethylase UTX", "", "", "", "", ""),
+        RisReference(71, "Tie, F.", "2012", "Histone Demethylase UTX", "", "", "", "", ""),
+    ]
+    ris = ris_text_from_references(references)
+
+    assert "ID  - Tie2012HistoneDemethylUTXRef43" in ris
+    assert "ID  - Tie2012HistoneDemethylUTXRef71" in ris
 
 
 def test_ris_provenance_check_requires_current_docx_metadata(tmp_path):
@@ -299,3 +312,35 @@ def test_numeric_citation_conversion_uses_ris_and_strips_stale_endnote_parts(tmp
     assert "{Real, 2021}" in converted
     assert "word/comments.xml" not in names
     assert "EndNote" not in styles
+
+
+def test_keep_references_retains_only_complete_reference_block(tmp_path):
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+    document_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t>Claim</w:t></w:r>
+      <w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:t>2</w:t></w:r>
+    </w:p>
+    <w:p><w:r><w:t>1.Cao, R., and Zhang, Y. (2004). Stale title. Molecular Cell 15, 57-67.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>1.Cao, R., and Zhang, Y. (2004). Canonical first title. Molecular Cell 15, 57-67.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>2.Pasini, D., and Helin, K. (2004). Canonical second title. EMBO Journal 23, 4061-4071.</w:t></w:r></w:p>
+  </w:body>
+</w:document>
+"""
+    with ZipFile(source, "w", ZIP_DEFLATED) as zf:
+        zf.writestr("word/document.xml", document_xml)
+
+    convert(source, output, keep_references=True)
+
+    with ZipFile(output) as zf:
+        root = ET.fromstring(zf.read("word/document.xml"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    converted = "\n".join(t.text or "" for t in root.findall(".//w:t", ns))
+
+    assert "{Pasini, 2004}" in converted
+    assert "Stale title" not in converted
+    assert "Canonical first title" in converted
+    assert "Canonical second title" in converted
