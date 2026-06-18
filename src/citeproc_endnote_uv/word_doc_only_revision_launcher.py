@@ -80,6 +80,13 @@ def endnote_conversion_command(raw_docx: Path, output_docx: Path, ris: Path) -> 
     ]
 
 
+def reference_list_to_ris_command(source_docx: Path, ris: Path, metadata_ris: Path | None = None) -> list[str]:
+    command = ["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(source_docx), str(ris)]
+    if metadata_ris is not None:
+        command.extend(["--metadata-ris", str(metadata_ris)])
+    return command
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -523,8 +530,13 @@ def finalize(args: argparse.Namespace) -> int:
         raw_reference_numbers,
         run_dir,
     )
-    run(["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(citation_source_docx), str(ris)])
-    run(["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(citation_source_docx), str(ris), "--check"])
+    metadata_ris = run_dir / "citation_metadata.ris"
+    if not metadata_ris.exists():
+        metadata_ris = None
+    run(reference_list_to_ris_command(citation_source_docx, ris, metadata_ris))
+    check_ris_cmd = reference_list_to_ris_command(citation_source_docx, ris, metadata_ris)
+    check_ris_cmd.append("--check")
+    run(check_ris_cmd)
     paragraph_arg = ",".join(str(index) for index in sorted(allowed)) if allowed else None
     support_cmd = [
         "python3",
@@ -542,7 +554,7 @@ def finalize(args: argparse.Namespace) -> int:
     run(["unzip", "-t", str(final_docx)])
     run(["python3", str(SCRIPT_DIR / "docx_word_sanity.py"), str(final_docx)])
     run(["python3", str(SCRIPT_DIR / "docx_endnote_ris_sync.py"), str(final_docx), str(ris)])
-    run(["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(citation_source_docx), str(ris), "--check"])
+    run(check_ris_cmd)
 
     repeat_docx = final_docx.with_name(f"{final_docx.stem}.determinism-check{final_docx.suffix}")
     try:
@@ -572,6 +584,7 @@ def finalize(args: argparse.Namespace) -> int:
         "reference_integrity_paragraphs": sorted(reference_integrity),
         "citation_source_policy": citation_source_policy,
         "citation_source_docx": citation_source_docx.name,
+        "citation_metadata_ris": metadata_ris.name if metadata_ris is not None else None,
         "recorded_asta_reference_additions": recorded_asta_additions,
         "temporary_citation_determinism_check": {
             "repeated_conversion": True,

@@ -55,6 +55,10 @@ def clean(text: str) -> str:
     return text.strip()
 
 
+def normalized_title(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
 def field_key(reference: Reference) -> str:
     first = re.sub(r"[^A-Za-z0-9]+", "", reference.authors.split(",", 1)[0])
     words = re.findall(r"[A-Za-z0-9]+", reference.title)
@@ -220,6 +224,104 @@ def author_list(authors: str) -> list[str]:
     return parsed
 
 
+def references_from_ris(path: Path) -> list[Reference]:
+    references: list[Reference] = []
+    current: dict[str, str] = {}
+    authors: list[str] = []
+    number = 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("ER  -"):
+            if current.get("TI") and current.get("PY"):
+                number += 1
+                pages = ""
+                if current.get("SP") and current.get("EP"):
+                    pages = f"{current['SP']}-{current['EP']}"
+                elif current.get("SP"):
+                    pages = current["SP"]
+                references.append(
+                    Reference(
+                        number=number,
+                        authors=", ".join(authors),
+                        year=clean(current.get("PY", "")),
+                        title=clean(current.get("TI", "")),
+                        journal=clean(current.get("JO", "")),
+                        volume=clean(current.get("VL", "")),
+                        pages=clean(pages),
+                        doi=clean(current.get("DO", "")),
+                        pmid=clean(current.get("AN", "")),
+                    )
+                )
+            current = {}
+            authors = []
+            continue
+        match = re.match(r"([A-Z0-9]{2})  - (.*)", line)
+        if not match:
+            continue
+        key, value = match.group(1), clean(match.group(2))
+        if key == "AU":
+            authors.append(value)
+        else:
+            current[key] = value
+    return references
+
+
+def title_metadata_index(metadata_references: list[Reference]) -> dict[str, Reference]:
+    exact: dict[str, Reference] = {}
+    for reference in metadata_references:
+        title = normalized_title(reference.title)
+        if title and title not in exact:
+            exact[title] = reference
+    return exact
+
+
+def metadata_match(reference: Reference, exact: dict[str, Reference]) -> Reference | None:
+    title = normalized_title(reference.title)
+    if title in exact:
+        return exact[title]
+    if len(title) < 30:
+        return None
+    matches = [
+        candidate
+        for candidate_title, candidate in exact.items()
+        if candidate_title.startswith(title) or title.startswith(candidate_title)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def better_authors(current: str, metadata: str) -> str:
+    current_authors = author_list(current)
+    metadata_authors = author_list(metadata)
+    if len(metadata_authors) > len(current_authors):
+        return metadata
+    return current
+
+
+def overlay_metadata(references: list[Reference], metadata_ris: Path | None) -> list[Reference]:
+    if metadata_ris is None:
+        return references
+    exact = title_metadata_index(references_from_ris(metadata_ris))
+    enriched: list[Reference] = []
+    for reference in references:
+        metadata = metadata_match(reference, exact)
+        if metadata is None:
+            enriched.append(reference)
+            continue
+        enriched.append(
+            Reference(
+                number=reference.number,
+                authors=better_authors(reference.authors, metadata.authors),
+                year=reference.year or metadata.year,
+                title=reference.title,
+                journal=metadata.journal or reference.journal,
+                volume=metadata.volume or reference.volume,
+                pages=metadata.pages or reference.pages,
+                doi=metadata.doi or reference.doi,
+                pmid=metadata.pmid or reference.pmid,
+            )
+        )
+    return enriched
+
+
 def write_record(reference: Reference, key: str | None = None) -> list[str]:
     lines = ["TY  - JOUR"]
     if reference.title:
@@ -249,7 +351,7 @@ def write_record(reference: Reference, key: str | None = None) -> list[str]:
     return lines
 
 
-def references_from_docx(source_docx: Path) -> list[Reference]:
+def references_from_docx(source_docx: Path, metadata_ris: Path | None = None) -> list[Reference]:
     references: list[Reference] = []
     failed: list[tuple[int, str]] = []
     for number, entry in split_reference_entries(reference_text_from_docx(source_docx)):
@@ -263,7 +365,7 @@ def references_from_docx(source_docx: Path) -> list[Reference]:
         details = "\n".join(f"{number}. {snippet}" for number, snippet in failed[:20])
         raise RuntimeError(f"Could not parse {len(failed)} reference entries:\n{details}")
 
-    return references
+    return overlay_metadata(references, metadata_ris)
 
 
 def ris_text_from_references(references: list[Reference]) -> str:
@@ -281,8 +383,8 @@ def ris_text_from_references(references: list[Reference]) -> str:
     return "\n".join(records)
 
 
-def canonical_ris_text_from_docx(source_docx: Path) -> str:
-    return ris_text_from_references(references_from_docx(source_docx))
+def canonical_ris_text_from_docx(source_docx: Path, metadata_ris: Path | None = None) -> str:
+    return ris_text_from_references(references_from_docx(source_docx, metadata_ris))
 
 
 def normalize_ris_text(text: str) -> str:
@@ -290,8 +392,8 @@ def normalize_ris_text(text: str) -> str:
     return text.strip() + "\n"
 
 
-def validate_ris_matches_docx(source_docx: Path, ris_path: Path) -> int:
-    references = references_from_docx(source_docx)
+def validate_ris_matches_docx(source_docx: Path, ris_path: Path, metadata_ris: Path | None = None) -> int:
+    references = references_from_docx(source_docx, metadata_ris)
     expected = normalize_ris_text(ris_text_from_references(references))
     observed = normalize_ris_text(ris_path.read_text(encoding="utf-8"))
     if observed != expected:
@@ -303,8 +405,8 @@ def validate_ris_matches_docx(source_docx: Path, ris_path: Path) -> int:
     return len(references)
 
 
-def export_ris(source_docx: Path, output_ris: Path) -> int:
-    references = references_from_docx(source_docx)
+def export_ris(source_docx: Path, output_ris: Path, metadata_ris: Path | None = None) -> int:
+    references = references_from_docx(source_docx, metadata_ris)
     output_ris.write_text(ris_text_from_references(references), encoding="utf-8")
     return len(references)
 
@@ -318,12 +420,17 @@ def main() -> int:
         action="store_true",
         help="Validate that OUTPUT_RIS is exactly the canonical RIS derived from SOURCE_DOCX.",
     )
+    parser.add_argument(
+        "--metadata-ris",
+        help="Optional pinned RIS metadata overlay. References are still selected and ordered from SOURCE_DOCX by title.",
+    )
     args = parser.parse_args()
+    metadata_ris = Path(args.metadata_ris) if args.metadata_ris else None
     if args.check:
-        count = validate_ris_matches_docx(Path(args.source_docx), Path(args.output_ris))
+        count = validate_ris_matches_docx(Path(args.source_docx), Path(args.output_ris), metadata_ris)
         print(f"PASS: {args.output_ris} is derived only from {args.source_docx} ({count} records).")
     else:
-        count = export_ris(Path(args.source_docx), Path(args.output_ris))
+        count = export_ris(Path(args.source_docx), Path(args.output_ris), metadata_ris)
         print(f"Wrote {count} records to {args.output_ris}")
     return 0
 

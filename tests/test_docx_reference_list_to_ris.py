@@ -163,6 +163,52 @@ def test_ris_provenance_check_requires_current_docx_metadata(tmp_path):
         validate_ris_matches_docx(source, output)
 
 
+def test_reference_export_can_overlay_pinned_complete_author_metadata(tmp_path):
+    source = tmp_path / "source.docx"
+    metadata = tmp_path / "metadata.ris"
+    output = tmp_path / "refs.ris"
+    document_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Main text.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>1.Margueron, R. et al. (2009). Role of the polycomb protein EED in the propagation of repressive histone marks. Nature 461, 762-767.</w:t></w:r></w:p>
+  </w:body>
+</w:document>
+"""
+    metadata.write_text(
+        "\n".join(
+            [
+                "TY  - JOUR",
+                "TI  - Role of the polycomb protein EED in the propagation of repressive histone marks",
+                "AU  - Margueron, R.",
+                "AU  - Justin, N.",
+                "AU  - Ohno, K.",
+                "PY  - 2009",
+                "JO  - Nature",
+                "VL  - 461",
+                "SP  - 762",
+                "EP  - 767",
+                "DO  - 10.1038/nature08398",
+                "ID  - Margueron2009RoleOfThe",
+                "ER  -",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with ZipFile(source, "w", ZIP_DEFLATED) as zf:
+        zf.writestr("word/document.xml", document_xml)
+
+    export_ris(source, output, metadata)
+    ris = output.read_text(encoding="utf-8")
+
+    assert "AU  - Margueron, R." in ris
+    assert "AU  - Justin, N." in ris
+    assert "AU  - Ohno, K." in ris
+    assert "DO  - 10.1038/nature08398" in ris
+    assert validate_ris_matches_docx(source, output, metadata) == 1
+
+
 def test_end_year_entry_with_ampersand_author_list_parses_title():
     reference = parse_reference(
         61,
