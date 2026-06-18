@@ -63,6 +63,20 @@ def field_key(reference: Reference) -> str:
 
 
 def reference_text_from_docx(docx: Path) -> str:
+    blocks = reference_text_blocks_from_docx(docx)
+    if not blocks:
+        raise RuntimeError("Could not locate numbered reference list in DOCX.")
+    return max(blocks, key=reference_block_score)
+
+
+def reference_block_score(reference_text: str) -> tuple[int, int]:
+    entries = split_reference_entries(reference_text)
+    if not entries:
+        return (0, 0)
+    return (max(number for number, _ in entries), len(entries))
+
+
+def reference_text_blocks_from_docx(docx: Path) -> list[str]:
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         with zipfile.ZipFile(docx) as zf:
@@ -72,20 +86,25 @@ def reference_text_from_docx(docx: Path) -> str:
         if body is None:
             raise RuntimeError("word/document.xml has no body")
         paragraphs = [p for p in body.findall(f"{W}p") if text_of(p).strip()]
-        ref_index = None
+        blocks: list[str] = []
         for index, paragraph in enumerate(paragraphs):
-            if re.match(r"^\s*1\.\s*[A-Z]", text_of(paragraph).strip()):
-                ref_index = index
-                break
-        if ref_index is None:
-            raise RuntimeError("Could not locate numbered reference list in DOCX.")
-        reference_paragraphs: list[str] = []
-        for paragraph in paragraphs[ref_index:]:
-            text = clean(text_of(paragraph))
-            if reference_paragraphs and not REF_START_RE.match(text):
-                break
-            reference_paragraphs.append(text)
-        return "\n".join(reference_paragraphs)
+            if not re.match(r"^\s*1\.\s*[A-Z]", text_of(paragraph).strip()):
+                continue
+            reference_paragraphs: list[str] = []
+            last_number = 0
+            for candidate in paragraphs[index:]:
+                text = clean(text_of(candidate))
+                match = REF_START_RE.match(text)
+                if reference_paragraphs and not match:
+                    break
+                if match:
+                    number = int(match.group(1))
+                    if reference_paragraphs and number <= last_number:
+                        break
+                    last_number = number
+                reference_paragraphs.append(text)
+            blocks.append("\n".join(reference_paragraphs))
+        return blocks
 
 
 def split_reference_entries(reference_text: str) -> list[tuple[int, str]]:

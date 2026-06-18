@@ -101,6 +101,29 @@ def test_reference_export_stops_before_appended_methods_note(tmp_path):
     assert "AI use" not in ris
 
 
+def test_reference_export_uses_complete_duplicate_reference_block(tmp_path):
+    source = tmp_path / "source.docx"
+    output = tmp_path / "refs.ris"
+    document_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Main text.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>1.Cao, R., and Zhang, Y. (2004). First title. Molecular Cell 15, 57-67.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>1.Cao, R., and Zhang, Y. (2004). First title. Molecular Cell 15, 57-67.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>2.Kaplan, T., Liu, C.L., Erkmann, J.A., Holik, J., Grunstein, M., Kaufman, P.D., Friedman, N. and Rando, O.J. (2008). Cell Cycle- and Chaperone-Mediated Regulation of H3K56ac Incorporation in Yeast. PLoS Genetics 4, e1000270. 10.1371/journal.pgen.1000270.</w:t></w:r></w:p>
+  </w:body>
+</w:document>
+"""
+    with ZipFile(source, "w", ZIP_DEFLATED) as zf:
+        zf.writestr("word/document.xml", document_xml)
+
+    assert export_ris(source, output) == 2
+    ris = output.read_text(encoding="utf-8")
+
+    assert "TI  - First title" in ris
+    assert "TI  - Cell Cycle- and Chaperone-Mediated Regulation of H3K56ac Incorporation in Yeast" in ris
+
+
 def test_ris_provenance_check_requires_current_docx_metadata(tmp_path):
     source = tmp_path / "source.docx"
     output = tmp_path / "refs.ris"
