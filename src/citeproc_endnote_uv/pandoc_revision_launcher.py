@@ -13,7 +13,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -56,7 +58,9 @@ AGENT_WORKFLOW_PASSES = [
         "required_checks": ["modified_claims_citation_checked", "unsupported_claims_resolved", "source_docx_only"],
         "instruction": (
             "Check each modified claim for same-sentence or adjacent citation support. If nearby existing "
-            "citations do not support the claim, require softening/removal or explicitly recorded new evidence."
+            "citations do not support the claim, prioritize writing a required request to "
+            "`agent_workflow/asta_requests.json` so the launcher can query Asta before finalize. "
+            "Soften or remove the claim only when the claim should not be retained even with new evidence."
         ),
     },
     {
@@ -424,6 +428,7 @@ def write_agent_workflow_tasks(run_dir: Path, manifest: dict) -> dict[str, objec
                     f"- Comments markdown: `{manifest['comments']['markdown']}`",
                     f"- Comments JSON: `{manifest['comments']['json']}`",
                     f"- Citation metadata RIS, only if needed: `{manifest['citation_policy']['metadata_overlay_ris']}`",
+                    "- Asta request ledger: `agent_workflow/asta_requests.json`",
                     "",
                     "## Recommended Minimal Inputs",
                     *[f"- `{path}`" for path in input_policy.get("recommended_inputs", [])],
@@ -483,8 +488,216 @@ def write_agent_workflow_tasks(run_dir: Path, manifest: dict) -> dict[str, objec
         "required_reports": required_reports,
         "audit_template": relative_to_run(template_path, run_dir),
         "audit_file": "agent_workflow/agent_workflow_audit.json",
+        "asta_requests": "agent_workflow/asta_requests.json",
+        "asta_resolutions_dir": "agent_workflow/asta",
         "required_passes": passes,
     }
+
+
+def write_asta_request_template(run_dir: Path, workflow: dict[str, object]) -> None:
+    requests_path = run_dir / str(workflow["asta_requests"])
+    requests_path.parent.mkdir(parents=True, exist_ok=True)
+    if requests_path.exists():
+        return
+    write_json(
+        requests_path,
+        {
+            "version": 1,
+            "purpose": (
+                "Evidence reviewers add required requests here when a modified claim cannot be supported by "
+                "adjacent citations from the current DOCX. Asta requests are the default resolution for "
+                "claims that should be retained. Finalize resolves pending required requests with "
+                "--asta-command or PANDOC_REVISION_ASTA_COMMAND, validates complete RIS, and fails if unresolved."
+            ),
+            "requests": [],
+        },
+    )
+
+
+def parse_ris_records(text: str) -> list[dict[str, list[str]]]:
+    records: list[dict[str, list[str]]] = []
+    current: dict[str, list[str]] | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        if not line:
+            continue
+        if len(line) < 6 or line[2:6] != "  - ":
+            continue
+        tag = line[:2]
+        value = line[6:].strip()
+        if tag == "TY":
+            current = {"TY": [value]}
+            continue
+        if current is None:
+            continue
+        if tag == "ER":
+            records.append(current)
+            current = None
+            continue
+        current.setdefault(tag, []).append(value)
+    return records
+
+
+def validate_complete_ris(path: Path, label: str) -> int:
+    if not path.exists() or not path.read_text(encoding="utf-8", errors="ignore").strip():
+        raise SystemExit(f"{label} did not produce a non-empty RIS file: {path}")
+    records = parse_ris_records(path.read_text(encoding="utf-8", errors="ignore"))
+    if not records:
+        raise SystemExit(f"{label} RIS contains no complete records ending in ER: {path}")
+    incomplete: list[str] = []
+    for index, record in enumerate(records, start=1):
+        missing = [tag for tag in ("TY", "TI", "AU", "PY") if not record.get(tag)]
+        if missing:
+            identifier = (record.get("ID") or record.get("TI") or [f"record {index}"])[0]
+            incomplete.append(f"{identifier}: missing {', '.join(missing)}")
+    if incomplete:
+        raise SystemExit(f"{label} RIS has incomplete records:\n" + "\n".join(incomplete))
+    return len(records)
+
+
+def normalized_request_id(raw: object, index: int) -> str:
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(raw or f"request-{index}")).strip("-")
+    return text or f"request-{index}"
+
+
+def asta_command_parts(command: str, request_json: Path, output_json: Path, output_ris: Path, run_dir: Path, request_id: str) -> list[str]:
+    replacements = {
+        "request_json": str(request_json),
+        "output_json": str(output_json),
+        "output_ris": str(output_ris),
+        "run_dir": str(run_dir),
+        "request_id": request_id,
+    }
+    if "{" in command and "}" in command:
+        return [part.format(**replacements) for part in shlex.split(command)]
+    return [
+        *shlex.split(command),
+        "--request",
+        str(request_json),
+        "--output",
+        str(output_json),
+        "--ris",
+        str(output_ris),
+    ]
+
+
+def report_requests_asta(run_dir: Path, workflow: dict[str, object]) -> bool:
+    patterns = [
+        re.compile(r"\b(?:needs?|requires?|required)\s+(?:an\s+)?Asta\s+requery\b", re.IGNORECASE),
+        re.compile(r"\bAsta\s+requery\s+(?:needed|required)\b", re.IGNORECASE),
+        re.compile(r"\bquery\s+Asta\b", re.IGNORECASE),
+    ]
+    for report in workflow.get("required_reports", []):
+        path = run_dir / str(report)
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if any(pattern.search(text) for pattern in patterns):
+            return True
+    return False
+
+
+def resolve_asta_requests(run_dir: Path, manifest: dict, command: str | None) -> Path | None:
+    workflow = manifest.get("agent_workflow", {})
+    requests_rel = workflow.get("asta_requests", "agent_workflow/asta_requests.json")
+    requests_path = ensure_inside_run_dir(run_dir / str(requests_rel), run_dir, "Asta request ledger")
+    if not requests_path.exists():
+        if report_requests_asta(run_dir, workflow):
+            raise SystemExit(
+                "Agent reports require Asta requery, but the Asta request ledger is missing. "
+                f"Expected {requests_path}."
+            )
+        return None
+
+    ledger = json.loads(requests_path.read_text(encoding="utf-8"))
+    requests = ledger.get("requests", [])
+    if not isinstance(requests, list):
+        raise SystemExit(f"Asta request ledger must contain a list at `requests`: {requests_path}")
+
+    required = [item for item in requests if isinstance(item, dict) and item.get("required", True)]
+    pending = [item for item in required if item.get("status", "pending") not in {"resolved", "not_needed"}]
+    if not pending and report_requests_asta(run_dir, workflow):
+        resolved = [item for item in required if item.get("status") == "resolved"]
+        if not resolved:
+            raise SystemExit(
+                "Agent reports mention Asta requery but no resolved Asta requests are recorded. "
+                f"Add requests to {requests_path} or remove/soften unsupported claims."
+            )
+    if not pending:
+        return combine_asta_ris(run_dir, manifest, requests_path, ledger)
+
+    resolver = command or os.environ.get("PANDOC_REVISION_ASTA_COMMAND")
+    if not resolver:
+        ids = ", ".join(normalized_request_id(item.get("id"), index) for index, item in enumerate(pending, start=1))
+        raise SystemExit(
+            "Asta evidence is required before finalize, but no resolver command is configured. "
+            "Set PANDOC_REVISION_ASTA_COMMAND or pass --asta-command. Pending request ids: " + ids
+        )
+
+    asta_dir = ensure_inside_run_dir(run_dir / str(workflow.get("asta_resolutions_dir", "agent_workflow/asta")), run_dir, "Asta output directory")
+    request_dir = asta_dir / "requests"
+    response_dir = asta_dir / "responses"
+    request_dir.mkdir(parents=True, exist_ok=True)
+    response_dir.mkdir(parents=True, exist_ok=True)
+
+    for index, item in enumerate(pending, start=1):
+        request_id = normalized_request_id(item.get("id"), index)
+        request_json = request_dir / f"{request_id}.json"
+        output_json = response_dir / f"{request_id}.json"
+        output_ris = response_dir / f"{request_id}.ris"
+        write_json(request_json, item)
+        run(asta_command_parts(resolver, request_json, output_json, output_ris, run_dir, request_id))
+        record_count = validate_complete_ris(output_ris, f"Asta request {request_id}")
+        item["status"] = "resolved"
+        item["resolution"] = {
+            **(item.get("resolution") if isinstance(item.get("resolution"), dict) else {}),
+            "request_json": relative_to_run(request_json, run_dir),
+            "response_json": relative_to_run(output_json, run_dir) if output_json.exists() else None,
+            "ris_file": relative_to_run(output_ris, run_dir),
+            "ris_record_count": record_count,
+        }
+    write_json(requests_path, ledger)
+    return combine_asta_ris(run_dir, manifest, requests_path, ledger)
+
+
+def combine_asta_ris(run_dir: Path, manifest: dict, requests_path: Path, ledger: dict) -> Path | None:
+    metadata_name = manifest.get("citation_policy", {}).get("metadata_overlay_ris")
+    if not metadata_name:
+        return None
+    base_ris = run_dir / str(metadata_name)
+    if not base_ris.exists():
+        return None
+
+    additions: list[Path] = []
+    for item in ledger.get("requests", []):
+        if not isinstance(item, dict) or item.get("status") != "resolved":
+            continue
+        resolution = item.get("resolution") if isinstance(item.get("resolution"), dict) else {}
+        ris_file = resolution.get("ris_file")
+        if ris_file:
+            additions.append(ensure_inside_run_dir(run_dir / str(ris_file), run_dir, "Asta RIS addition"))
+
+    if not additions:
+        return None
+
+    combined = run_dir / "citation_metadata.with_asta.ris"
+    chunks = [base_ris.read_text(encoding="utf-8", errors="ignore").rstrip(), ""]
+    total_records = 0
+    for path in additions:
+        total_records += validate_complete_ris(path, f"Asta RIS addition {relative_to_run(path, run_dir)}")
+        chunks.append(path.read_text(encoding="utf-8", errors="ignore").strip())
+        chunks.append("")
+    combined.write_text("\n".join(chunks).strip() + "\n", encoding="utf-8")
+    write_json(
+        run_dir / "asta_reference_additions.json",
+        {
+            "requests": relative_to_run(requests_path, run_dir),
+            "combined_metadata_ris": combined.name,
+            "addition_files": [relative_to_run(path, run_dir) for path in additions],
+            "addition_record_count": total_records,
+        },
+    )
+    return combined
 
 
 def validate_agent_workflow(run_dir: Path, manifest: dict, revised_markdown: Path) -> dict:
@@ -688,6 +901,7 @@ def start(args: argparse.Namespace) -> int:
         manifest["agent_inputs"] = write_agent_inputs(run_dir, manifest, markdown, revised_markdown)
     with timed_step(profile_steps, "write_agent_workflow_scaffold"):
         manifest["agent_workflow"] = write_agent_workflow_tasks(run_dir, manifest)
+        write_asta_request_template(run_dir, manifest["agent_workflow"])
     with timed_step(profile_steps, "write_manifest"):
         write_json(manifest_path, manifest)
     profile_start = time.perf_counter()
@@ -745,6 +959,7 @@ def finalize(args: argparse.Namespace) -> int:
         raise SystemExit(f"Missing revised markdown: {revised_markdown}")
 
     agent_workflow_audit = validate_agent_workflow(run_dir, manifest, revised_markdown)
+    asta_metadata_ris = resolve_asta_requests(run_dir, manifest, args.asta_command)
 
     run(pandoc_markdown_to_docx(revised_markdown, raw_docx, reference_doc))
     stripped_raw = raw_docx.with_name(f"{raw_docx.stem}.stripped{raw_docx.suffix}")
@@ -752,7 +967,7 @@ def finalize(args: argparse.Namespace) -> int:
     stripped_raw.replace(raw_docx)
 
     metadata_name = manifest.get("citation_policy", {}).get("metadata_overlay_ris")
-    metadata_ris = run_dir / metadata_name if metadata_name else run_dir / "citation_metadata.ris"
+    metadata_ris = asta_metadata_ris or (run_dir / metadata_name if metadata_name else run_dir / "citation_metadata.ris")
     if not metadata_ris.exists():
         metadata_ris = None
 
@@ -792,6 +1007,7 @@ def finalize(args: argparse.Namespace) -> int:
         "final_docx": final_docx.name,
         "ris": ris.name,
         "citation_metadata_ris": metadata_ris.name if metadata_ris is not None else None,
+        "asta_reference_additions": "asta_reference_additions.json" if (run_dir / "asta_reference_additions.json").exists() else None,
         "agent_workflow_audit": manifest["agent_workflow"]["audit_file"],
         "agent_workflow_passes": [item["name"] for item in agent_workflow_audit["passes"]],
         "temporary_citation_determinism_check": {
@@ -825,6 +1041,15 @@ def main(argv: list[str] | None = None) -> int:
 
     finalize_parser = subparsers.add_parser("finalize", help="Compile revised markdown and finalize DOCX/RIS.")
     finalize_parser.add_argument("manifest")
+    finalize_parser.add_argument(
+        "--asta-command",
+        help=(
+            "Command used to resolve pending agent_workflow/asta_requests.json entries. If the command string "
+            "contains placeholders, {request_json}, {output_json}, {output_ris}, {run_dir}, and {request_id} "
+            "are expanded. Otherwise the launcher appends --request, --output, and --ris arguments. "
+            "May also be set with PANDOC_REVISION_ASTA_COMMAND."
+        ),
+    )
     finalize_parser.set_defaults(func=finalize)
 
     args = parser.parse_args(argv)

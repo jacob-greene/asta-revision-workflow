@@ -10,9 +10,11 @@ from citeproc_endnote_uv.pandoc_revision_launcher import (
     ensure_inside_run_dir,
     pandoc_docx_to_markdown,
     pandoc_markdown_to_docx,
+    resolve_asta_requests,
     sha256,
     validate_agent_workflow,
     write_agent_inputs,
+    write_asta_request_template,
     write_agent_workflow_tasks,
     write_json,
     write_launcher_profile,
@@ -81,7 +83,10 @@ def agent_manifest(tmp_path):
         "source_sha256": "source-hash",
         "pandoc": {"reference_doc": "style-reference.docx"},
         "comments": {"markdown": "draft.comments.md", "json": "draft.comments.json", "count": 1},
-        "citation_policy": {"metadata_overlay_ris": "citation_metadata.ris", "metadata_audit": "citation_metadata_audit.json"},
+        "citation_policy": {
+            "metadata_overlay_ris": "citation_metadata.ris",
+            "metadata_audit": "citation_metadata_audit.json",
+        },
         "generated_artifacts": {
             "source_markdown": "draft.source.md",
             "revised_markdown": revised.name,
@@ -144,16 +149,19 @@ def test_agent_workflow_scaffold_creates_tasks_and_template(tmp_path):
     )
 
     workflow = write_agent_workflow_tasks(tmp_path, manifest)
+    write_asta_request_template(tmp_path, workflow)
 
     assert workflow["required"] is True
     assert len(workflow["task_files"]) == 4
     assert len(workflow["required_reports"]) == 4
     assert (tmp_path / workflow["audit_template"]).exists()
+    assert (tmp_path / workflow["asta_requests"]).exists()
     first_task = (tmp_path / workflow["task_files"][0]).read_text(encoding="utf-8")
     assert "Required Checks" in first_task
     assert "draft.revised.md" in first_task
     assert "Recommended Minimal Inputs" in first_task
     assert "citation_metadata.ris" in first_task
+    assert "agent_workflow/asta_requests.json" in first_task
 
 
 def test_agent_inputs_use_comment_scope_and_avoid_ris_for_tone(tmp_path):
@@ -226,3 +234,81 @@ def test_agent_workflow_validation_hashes_revised_markdown(tmp_path):
 
     with pytest.raises(SystemExit, match="hash does not match"):
         validate_agent_workflow(tmp_path, manifest, revised)
+
+
+def test_resolve_asta_requests_blocks_without_resolver(tmp_path):
+    revised, manifest = agent_manifest(tmp_path)
+    write_agent_fixture_files(tmp_path, manifest)
+    manifest["agent_workflow"] = write_agent_workflow_tasks(tmp_path, manifest)
+    write_asta_request_template(tmp_path, manifest["agent_workflow"])
+    write_json(
+        tmp_path / manifest["agent_workflow"]["asta_requests"],
+        {
+            "version": 1,
+            "requests": [
+                {
+                    "id": "yeast-h3k27ac",
+                    "required": True,
+                    "status": "pending",
+                    "claim": "H3K27ac exists in yeast.",
+                    "query": "Find complete citation metadata for yeast H3K27ac.",
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(SystemExit, match="Asta evidence is required"):
+        resolve_asta_requests(tmp_path, manifest, None)
+
+
+def test_resolve_asta_requests_runs_command_and_combines_ris(tmp_path):
+    revised, manifest = agent_manifest(tmp_path)
+    write_agent_fixture_files(tmp_path, manifest)
+    manifest["agent_workflow"] = write_agent_workflow_tasks(tmp_path, manifest)
+    write_asta_request_template(tmp_path, manifest["agent_workflow"])
+    (tmp_path / manifest["citation_policy"]["metadata_overlay_ris"]).write_text(
+        "TY  - JOUR\nTI  - Existing paper\nAU  - Doe, Jane\nPY  - 2020\nID  - existing\nER  -\n",
+        encoding="utf-8",
+    )
+    write_json(
+        tmp_path / manifest["agent_workflow"]["asta_requests"],
+        {
+            "version": 1,
+            "requests": [
+                {
+                    "id": "needed-citation",
+                    "required": True,
+                    "status": "pending",
+                    "claim": "A claim that needs Asta.",
+                    "query": "Find complete citation metadata.",
+                }
+            ],
+        },
+    )
+    resolver = tmp_path / "resolver.py"
+    resolver.write_text(
+        "\n".join(
+            [
+                "import argparse, json",
+                "parser = argparse.ArgumentParser()",
+                "parser.add_argument('--request')",
+                "parser.add_argument('--output')",
+                "parser.add_argument('--ris')",
+                "args = parser.parse_args()",
+                "open(args.output, 'w').write(json.dumps({'status': 'resolved'}))",
+                "open(args.ris, 'w').write('TY  - JOUR\\nTI  - Asta paper\\nAU  - Smith, Ada\\nPY  - 2024\\nID  - asta-paper\\nER  -\\n')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    combined = resolve_asta_requests(tmp_path, manifest, f"python {resolver}")
+
+    assert combined == tmp_path / "citation_metadata.with_asta.ris"
+    text = combined.read_text(encoding="utf-8")
+    assert "TI  - Existing paper" in text
+    assert "TI  - Asta paper" in text
+    ledger = json.loads((tmp_path / manifest["agent_workflow"]["asta_requests"]).read_text(encoding="utf-8"))
+    assert ledger["requests"][0]["status"] == "resolved"
+    additions = json.loads((tmp_path / "asta_reference_additions.json").read_text(encoding="utf-8"))
+    assert additions["addition_record_count"] == 1

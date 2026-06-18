@@ -155,12 +155,29 @@ Citation handling is deterministic for a fixed run directory. The recompiled
 Word document defines which references exist and their numbering/order. The
 run-local `citation_metadata.ris` is built from embedded EndNote records in the
 current source DOCX, including full author lists even when the visible Word
-bibliography says `et al.`. It cannot add references that are absent from the
-current document. New literature found with Asta must be inserted into the
-current revised markdown/reference list and recorded in the run directory before
-finalization. During finalization, abbreviated visible references must match the
-run-local metadata; otherwise the workflow fails rather than emitting truncated
-authors.
+bibliography says `et al.`. During finalization, abbreviated visible references
+must match the run-local metadata; otherwise the workflow fails rather than
+emitting truncated authors.
+
+If the evidence pass finds a modified claim that is not supported by adjacent
+citations, it must prioritize Asta for claims that should be retained: add a
+required item to `agent_workflow/asta_requests.json`. Remove or soften the claim
+only when the claim should not remain even with new evidence.
+`pandoc-word-revision finalize` resolves pending required requests before
+citation generation. Configure the resolver with `--asta-command` or
+`PANDOC_REVISION_ASTA_COMMAND`. The command may use placeholders:
+
+```bash
+pandoc-word-revision finalize manuscript_run/manifest.json \
+  --asta-command 'asta-evidence-resolver --request {request_json} --output {output_json} --ris {output_ris}'
+```
+
+If no placeholders are present, the launcher appends `--request`, `--output`,
+and `--ris`. The resolver must write complete RIS records with at least type,
+title, author, and year. Finalize validates those records, writes
+`asta_reference_additions.json`, and combines them with the embedded metadata as
+`citation_metadata.with_asta.ris`. If Asta is required but unresolved, finalize
+fails and reports the pending request IDs.
 
 `docx-reference-list-to-ris` remains available as a lower-level utility. It
 reads the numbered reference list from a Word document and writes a matching RIS
