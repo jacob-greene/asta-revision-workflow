@@ -80,10 +80,14 @@ def endnote_conversion_command(raw_docx: Path, output_docx: Path, ris: Path) -> 
     ]
 
 
-def reference_list_to_ris_command(source_docx: Path, ris: Path, metadata_ris: Path | None = None) -> list[str]:
+def reference_list_to_ris_command(
+    source_docx: Path, ris: Path, metadata_ris: Path | None = None, require_metadata_match: bool = False
+) -> list[str]:
     command = ["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(source_docx), str(ris)]
     if metadata_ris is not None:
         command.extend(["--metadata-ris", str(metadata_ris)])
+    if require_metadata_match:
+        command.append("--require-metadata-match")
     return command
 
 

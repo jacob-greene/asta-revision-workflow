@@ -209,6 +209,39 @@ def test_reference_export_can_overlay_pinned_complete_author_metadata(tmp_path):
     assert validate_ris_matches_docx(source, output, metadata) == 1
 
 
+def test_reference_export_requires_metadata_match_for_abbreviated_authors(tmp_path):
+    source = tmp_path / "source.docx"
+    metadata = tmp_path / "metadata.ris"
+    output = tmp_path / "refs.ris"
+    document_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Main text.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>1.Margueron, R. et al. (2009). Role of the polycomb protein EED in the propagation of repressive histone marks. Nature 461, 762-767.</w:t></w:r></w:p>
+  </w:body>
+</w:document>
+"""
+    metadata.write_text(
+        "\n".join(
+            [
+                "TY  - JOUR",
+                "TI  - A different title",
+                "AU  - Margueron, R.",
+                "AU  - Justin, N.",
+                "PY  - 2009",
+                "ER  -",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with ZipFile(source, "w", ZIP_DEFLATED) as zf:
+        zf.writestr("word/document.xml", document_xml)
+
+    with pytest.raises(RuntimeError, match="did not match the metadata RIS"):
+        export_ris(source, output, metadata, require_metadata_match=True)
+
+
 def test_end_year_entry_with_ampersand_author_list_parses_title():
     reference = parse_reference(
         61,

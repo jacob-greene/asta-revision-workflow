@@ -3,9 +3,9 @@
 
 The current Word document remains the source of truth, but the revision
 surface is a Pandoc markdown export generated inside the current run
-directory.  Citation membership/order comes from the recompiled Word document;
-complete citation metadata can be supplied through a pinned run-local RIS
-overlay.
+directory. Citation membership/order comes from the recompiled Word document;
+complete citation metadata is extracted from embedded EndNote fields in the
+same source DOCX.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import zipfile
 from dataclasses import asdict
 from pathlib import Path
 
+from citeproc_endnote_uv.docx_endnote_to_ris import export_ris as export_embedded_endnote_ris
 from citeproc_endnote_uv.docx_extract_comments import extract_comments, format_markdown
 from citeproc_endnote_uv.word_doc_only_revision_launcher import (
     endnote_conversion_command,
@@ -125,14 +126,38 @@ def start(args: argparse.Namespace) -> int:
     shutil.copy2(source, source_copy)
     shutil.copy2(source, style_reference)
 
-    metadata_ris_name = None
+    metadata_ris = run_dir / "citation_metadata.ris"
+    metadata_audit_path = run_dir / "citation_metadata_audit.json"
+    metadata_audit = export_embedded_endnote_ris(source_copy, metadata_ris)
+    metadata_audit["source"] = "embedded-endnote-fields"
+    metadata_ris_name = metadata_ris.name
+    metadata_audit_name = metadata_audit_path.name
+    if metadata_audit["missing_author_records"]:
+        write_json(metadata_audit_path, metadata_audit)
+        raise SystemExit(
+            "Embedded EndNote metadata contains records without authors; refusing to create a truncated RIS overlay. "
+            f"See {metadata_audit_path}"
+        )
     if args.metadata_ris:
         metadata_source = Path(args.metadata_ris).resolve()
         if not metadata_source.exists():
             raise SystemExit(f"Metadata RIS does not exist: {metadata_source}")
-        metadata_ris = run_dir / "citation_metadata.ris"
-        shutil.copy2(metadata_source, metadata_ris)
-        metadata_ris_name = metadata_ris.name
+        if metadata_audit["embedded_record_count"]:
+            fallback = run_dir / "fallback_external_metadata.ris"
+            shutil.copy2(metadata_source, fallback)
+            metadata_audit["fallback_external_metadata_ris"] = fallback.name
+            metadata_audit["fallback_external_metadata_used"] = False
+        else:
+            shutil.copy2(metadata_source, metadata_ris)
+            metadata_audit["source"] = "external-metadata-ris-fallback"
+            metadata_audit["fallback_external_metadata_used"] = True
+    if not metadata_audit["embedded_record_count"] and not args.metadata_ris:
+        raise SystemExit(
+            "No embedded EndNote records were found in the source DOCX. The Pandoc workflow now derives "
+            "complete citation metadata from the current Word file; provide a DOCX with EndNote fields or "
+            "an explicit --metadata-ris fallback."
+        )
+    write_json(metadata_audit_path, metadata_audit)
 
     comments = extract_comments(source_copy)
     comments_md.write_text(format_markdown(comments), encoding="utf-8")
@@ -159,6 +184,9 @@ def start(args: argparse.Namespace) -> int:
         "citation_policy": {
             "membership_and_order": "recompiled-current-run-docx",
             "metadata_overlay_ris": metadata_ris_name,
+            "metadata_source": metadata_audit["source"],
+            "metadata_audit": metadata_audit_name,
+            "require_metadata_match": True,
             "new_asta_references": "recorded in asta_reference_additions.json when present",
         },
         "generated_artifacts": {
@@ -210,8 +238,8 @@ def finalize(args: argparse.Namespace) -> int:
     if not metadata_ris.exists():
         metadata_ris = None
 
-    run(reference_list_to_ris_command(raw_docx, ris, metadata_ris))
-    check_ris_cmd = reference_list_to_ris_command(raw_docx, ris, metadata_ris)
+    run(reference_list_to_ris_command(raw_docx, ris, metadata_ris, require_metadata_match=metadata_ris is not None))
+    check_ris_cmd = reference_list_to_ris_command(raw_docx, ris, metadata_ris, require_metadata_match=metadata_ris is not None)
     check_ris_cmd.append("--check")
     run(check_ris_cmd)
     run(["python3", str(SCRIPT_DIR / "docx_plain_numeric_citation_check.py"), str(raw_docx)])
@@ -269,7 +297,10 @@ def main(argv: list[str] | None = None) -> int:
     start_parser.add_argument("source_docx")
     start_parser.add_argument("--output-stem")
     start_parser.add_argument("--run-dir")
-    start_parser.add_argument("--metadata-ris", help="Pinned complete RIS metadata overlay copied into the run.")
+    start_parser.add_argument(
+        "--metadata-ris",
+        help="Fallback complete RIS metadata overlay, used only when the source DOCX has no embedded EndNote records.",
+    )
     start_parser.set_defaults(func=start)
 
     finalize_parser = subparsers.add_parser("finalize", help="Compile revised markdown and finalize DOCX/RIS.")

@@ -30,7 +30,7 @@ pandoc-word-revision start
         +--> source markdown
         +--> comments markdown/json
         +--> style-reference.docx
-        +--> optional complete citation_metadata.ris
+        +--> citation_metadata.ris extracted from embedded EndNote fields
         |
         v
 Agent revision workflow over run-local markdown
@@ -43,7 +43,7 @@ Agent revision workflow over run-local markdown
         v
 Pandoc recompiled Word draft with EndNote temporary citations
         |
-        +--> paired RIS generated from current references plus pinned metadata
+        +--> paired RIS generated from current references plus embedded metadata
         |
         v
 Import RIS into EndNote, then update citations in Word
@@ -62,15 +62,15 @@ Launch the Pandoc-centered Word workflow before planning revisions:
 
 ```bash
 pandoc-word-revision start commented-draft.docx \
-  --output-stem manuscript_v4 \
-  --metadata-ris complete-current-library.ris
+  --output-stem manuscript_v4
 ```
 
 This creates a run directory containing `manuscript_v4.source.md`,
 `manuscript_v4.revised.md`, `manuscript_v4.comments.md`,
-`manuscript_v4.comments.json`, `style-reference.docx`, and a manifest. Word
-comments are extracted directly from the DOCX; Pandoc supplies the editable
-markdown and the Word style reference.
+`manuscript_v4.comments.json`, `style-reference.docx`,
+`citation_metadata.ris`, `citation_metadata_audit.json`, and a manifest. Word
+comments and complete citation metadata are extracted directly from the DOCX;
+Pandoc supplies the editable markdown and the Word style reference.
 
 ## Install
 
@@ -116,8 +116,7 @@ For workflows that begin from a `.docx` draft with numeric superscript citations
 
 ```bash
 pandoc-word-revision start commented-draft.docx \
-  --output-stem manuscript_v4 \
-  --metadata-ris complete-current-library.ris
+  --output-stem manuscript_v4
 
 # edit manuscript_v4_pandoc_revision_run/manuscript_v4.revised.md
 
@@ -125,24 +124,28 @@ pandoc-word-revision finalize manuscript_v4_pandoc_revision_run/manifest.json
 ```
 
 `pandoc-word-revision start` extracts text and style through Pandoc, extracts
-comments directly from Word XML, and pins optional complete citation metadata
-inside the run directory. `finalize` recompiles the revised markdown with
-Pandoc, generates the paired RIS from the current recompiled reference list,
-uses the pinned metadata overlay to restore complete author/DOI fields, converts
-numeric citations to EndNote temporary citations, and runs sanity/sync checks.
+comments directly from Word XML, and extracts complete citation metadata from
+embedded EndNote field records in the same source DOCX. `finalize` recompiles
+the revised markdown with Pandoc, generates the paired RIS from the current
+recompiled reference list, uses the run-local metadata overlay to restore
+complete author/DOI fields, converts numeric citations to EndNote temporary
+citations, and runs sanity/sync checks.
 
 Citation handling is deterministic for a fixed run directory. The recompiled
 Word document defines which references exist and their numbering/order. The
-run-local `citation_metadata.ris` supplies complete metadata for matching
-titles, including full author lists, but cannot add references that are absent
-from the current document. New literature found with Asta must be inserted into
-the current revised markdown/reference list and recorded in the run directory
-before finalization.
+run-local `citation_metadata.ris` is built from embedded EndNote records in the
+current source DOCX, including full author lists even when the visible Word
+bibliography says `et al.`. It cannot add references that are absent from the
+current document. New literature found with Asta must be inserted into the
+current revised markdown/reference list and recorded in the run directory before
+finalization. During finalization, abbreviated visible references must match the
+run-local metadata; otherwise the workflow fails rather than emitting truncated
+authors.
 
 `docx-reference-list-to-ris` remains available as a lower-level utility. It
 reads the numbered reference list from a Word document and writes a matching RIS
-file; pass `--metadata-ris` when the Word bibliography contains `et al.` or
-otherwise abbreviated metadata.
+file; pass `--metadata-ris --require-metadata-match` when the Word bibliography
+contains `et al.` or otherwise abbreviated metadata.
 
 `docx-numeric-to-endnote-temp` converts numeric superscript citations such as `6,7` into EndNote temporary citations such as `{McCabe, 2012, Mutation of A677...; McCabe, 2012, EZH2 inhibition...}`. When two distinct papers share the same first author and year, the converter includes the title to make EndNote matching unique. Duplicate bibliography entries for the same paper remain concise.
 

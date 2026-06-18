@@ -296,15 +296,35 @@ def better_authors(current: str, metadata: str) -> str:
     return current
 
 
-def overlay_metadata(references: list[Reference], metadata_ris: Path | None) -> list[Reference]:
+def needs_complete_metadata(reference: Reference) -> bool:
+    return bool(re.search(r"\bet\s+al\.?", reference.authors, flags=re.IGNORECASE)) or len(author_list(reference.authors)) <= 1
+
+
+def overlay_metadata(
+    references: list[Reference], metadata_ris: Path | None, require_metadata_match: bool = False
+) -> list[Reference]:
     if metadata_ris is None:
+        if require_metadata_match:
+            incomplete = [reference for reference in references if needs_complete_metadata(reference)]
+            if incomplete:
+                details = "\n".join(
+                    f"{reference.number}. {reference.authors} ({reference.year}). {reference.title}"
+                    for reference in incomplete[:20]
+                )
+                raise RuntimeError(
+                    "Complete citation metadata is required, but no metadata RIS was provided for "
+                    f"{len(incomplete)} abbreviated or single-author reference entries:\n{details}"
+                )
         return references
     exact = title_metadata_index(references_from_ris(metadata_ris))
     enriched: list[Reference] = []
+    unmatched: list[Reference] = []
     for reference in references:
         metadata = metadata_match(reference, exact)
         if metadata is None:
             enriched.append(reference)
+            if require_metadata_match and needs_complete_metadata(reference):
+                unmatched.append(reference)
             continue
         enriched.append(
             Reference(
@@ -318,6 +338,15 @@ def overlay_metadata(references: list[Reference], metadata_ris: Path | None) -> 
                 doi=metadata.doi or reference.doi,
                 pmid=metadata.pmid or reference.pmid,
             )
+        )
+    if unmatched:
+        details = "\n".join(
+            f"{reference.number}. {reference.authors} ({reference.year}). {reference.title}"
+            for reference in unmatched[:20]
+        )
+        raise RuntimeError(
+            "Complete citation metadata is required, but these abbreviated or single-author "
+            f"Word references did not match the metadata RIS:\n{details}"
         )
     return enriched
 
@@ -351,7 +380,9 @@ def write_record(reference: Reference, key: str | None = None) -> list[str]:
     return lines
 
 
-def references_from_docx(source_docx: Path, metadata_ris: Path | None = None) -> list[Reference]:
+def references_from_docx(
+    source_docx: Path, metadata_ris: Path | None = None, require_metadata_match: bool = False
+) -> list[Reference]:
     references: list[Reference] = []
     failed: list[tuple[int, str]] = []
     for number, entry in split_reference_entries(reference_text_from_docx(source_docx)):
@@ -365,7 +396,7 @@ def references_from_docx(source_docx: Path, metadata_ris: Path | None = None) ->
         details = "\n".join(f"{number}. {snippet}" for number, snippet in failed[:20])
         raise RuntimeError(f"Could not parse {len(failed)} reference entries:\n{details}")
 
-    return overlay_metadata(references, metadata_ris)
+    return overlay_metadata(references, metadata_ris, require_metadata_match=require_metadata_match)
 
 
 def ris_text_from_references(references: list[Reference]) -> str:
@@ -383,8 +414,10 @@ def ris_text_from_references(references: list[Reference]) -> str:
     return "\n".join(records)
 
 
-def canonical_ris_text_from_docx(source_docx: Path, metadata_ris: Path | None = None) -> str:
-    return ris_text_from_references(references_from_docx(source_docx, metadata_ris))
+def canonical_ris_text_from_docx(
+    source_docx: Path, metadata_ris: Path | None = None, require_metadata_match: bool = False
+) -> str:
+    return ris_text_from_references(references_from_docx(source_docx, metadata_ris, require_metadata_match))
 
 
 def normalize_ris_text(text: str) -> str:
@@ -392,8 +425,10 @@ def normalize_ris_text(text: str) -> str:
     return text.strip() + "\n"
 
 
-def validate_ris_matches_docx(source_docx: Path, ris_path: Path, metadata_ris: Path | None = None) -> int:
-    references = references_from_docx(source_docx, metadata_ris)
+def validate_ris_matches_docx(
+    source_docx: Path, ris_path: Path, metadata_ris: Path | None = None, require_metadata_match: bool = False
+) -> int:
+    references = references_from_docx(source_docx, metadata_ris, require_metadata_match)
     expected = normalize_ris_text(ris_text_from_references(references))
     observed = normalize_ris_text(ris_path.read_text(encoding="utf-8"))
     if observed != expected:
@@ -405,8 +440,10 @@ def validate_ris_matches_docx(source_docx: Path, ris_path: Path, metadata_ris: P
     return len(references)
 
 
-def export_ris(source_docx: Path, output_ris: Path, metadata_ris: Path | None = None) -> int:
-    references = references_from_docx(source_docx, metadata_ris)
+def export_ris(
+    source_docx: Path, output_ris: Path, metadata_ris: Path | None = None, require_metadata_match: bool = False
+) -> int:
+    references = references_from_docx(source_docx, metadata_ris, require_metadata_match)
     output_ris.write_text(ris_text_from_references(references), encoding="utf-8")
     return len(references)
 
@@ -422,15 +459,22 @@ def main() -> int:
     )
     parser.add_argument(
         "--metadata-ris",
-        help="Optional pinned RIS metadata overlay. References are still selected and ordered from SOURCE_DOCX by title.",
+        help="Optional complete RIS metadata overlay. References are still selected and ordered from SOURCE_DOCX by title.",
+    )
+    parser.add_argument(
+        "--require-metadata-match",
+        action="store_true",
+        help="Fail if an abbreviated/single-author Word reference does not match complete metadata.",
     )
     args = parser.parse_args()
     metadata_ris = Path(args.metadata_ris) if args.metadata_ris else None
     if args.check:
-        count = validate_ris_matches_docx(Path(args.source_docx), Path(args.output_ris), metadata_ris)
+        count = validate_ris_matches_docx(
+            Path(args.source_docx), Path(args.output_ris), metadata_ris, args.require_metadata_match
+        )
         print(f"PASS: {args.output_ris} is derived only from {args.source_docx} ({count} records).")
     else:
-        count = export_ris(Path(args.source_docx), Path(args.output_ris), metadata_ris)
+        count = export_ris(Path(args.source_docx), Path(args.output_ris), metadata_ris, args.require_metadata_match)
         print(f"Wrote {count} records to {args.output_ris}")
     return 0
 
