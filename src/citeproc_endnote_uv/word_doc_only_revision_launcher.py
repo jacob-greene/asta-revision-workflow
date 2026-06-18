@@ -68,6 +68,18 @@ def run(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
+def endnote_conversion_command(raw_docx: Path, output_docx: Path, ris: Path) -> list[str]:
+    return [
+        "python3",
+        str(SCRIPT_DIR / "docx_numeric_to_endnote_temp.py"),
+        str(raw_docx),
+        str(output_docx),
+        "--ris",
+        str(ris),
+        "--keep-references",
+    ]
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -78,6 +90,19 @@ def sha256(path: Path) -> str:
 
 def text_of(elem: ET.Element) -> str:
     return "".join(t.text or "" for t in elem.findall(".//w:t", NS))
+
+
+def docx_visible_text(path: Path) -> str:
+    with zipfile.ZipFile(path) as zf:
+        root = ET.fromstring(zf.read("word/document.xml"))
+    return text_of(root)
+
+
+def temporary_citation_entries(path: Path) -> list[str]:
+    entries: list[str] = []
+    for citation in re.findall(r"\{([^{}]+)\}", docx_visible_text(path)):
+        entries.extend(re.sub(r"\s+", " ", part).strip() for part in citation.split(";") if part.strip())
+    return entries
 
 
 def comment_id(elem: ET.Element) -> str:
@@ -513,21 +538,22 @@ def finalize(args: argparse.Namespace) -> int:
         support_cmd.extend(["--paragraphs", paragraph_arg])
     run(support_cmd)
     run(["python3", str(SCRIPT_DIR / "docx_plain_numeric_citation_check.py"), str(raw_docx)])
-    run(
-        [
-            "python3",
-            str(SCRIPT_DIR / "docx_numeric_to_endnote_temp.py"),
-            str(raw_docx),
-            str(final_docx),
-            "--ris",
-            str(ris),
-            "--keep-references",
-        ]
-    )
+    run(endnote_conversion_command(raw_docx, final_docx, ris))
     run(["unzip", "-t", str(final_docx)])
     run(["python3", str(SCRIPT_DIR / "docx_word_sanity.py"), str(final_docx)])
     run(["python3", str(SCRIPT_DIR / "docx_endnote_ris_sync.py"), str(final_docx), str(ris)])
     run(["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(citation_source_docx), str(ris), "--check"])
+
+    repeat_docx = final_docx.with_name(f"{final_docx.stem}.determinism-check{final_docx.suffix}")
+    try:
+        run(endnote_conversion_command(raw_docx, repeat_docx, ris))
+        primary_entries = temporary_citation_entries(final_docx)
+        repeat_entries = temporary_citation_entries(repeat_docx)
+        if primary_entries != repeat_entries:
+            raise SystemExit("EndNote temporary citation conversion is not deterministic across repeated runs.")
+    finally:
+        if repeat_docx.exists():
+            repeat_docx.unlink()
 
     stale = {path.name: stale_marker_counts(path) for path in (raw_docx, final_docx)}
     if any(count for counts in stale.values() for count in counts.values()):
@@ -547,6 +573,10 @@ def finalize(args: argparse.Namespace) -> int:
         "citation_source_policy": citation_source_policy,
         "citation_source_docx": citation_source_docx.name,
         "recorded_asta_reference_additions": recorded_asta_additions,
+        "temporary_citation_determinism_check": {
+            "repeated_conversion": True,
+            "temporary_citation_entries": len(primary_entries),
+        },
         "final_docx": final_docx.name,
         "ris": ris.name,
         "reviewers": manifest.get("reviewers", {}),
