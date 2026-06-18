@@ -13,26 +13,30 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
 import zipfile
 from dataclasses import asdict
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 from citeproc_endnote_uv.docx_endnote_to_ris import export_ris as export_embedded_endnote_ris
 from citeproc_endnote_uv.docx_extract_comments import extract_comments, format_markdown
-from citeproc_endnote_uv.word_doc_only_revision_launcher import (
-    endnote_conversion_command,
-    reference_list_to_ris_command,
-    stale_marker_counts,
-    temporary_citation_entries,
-)
 from citeproc_endnote_uv.strip_docx_comments import strip_comments
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+W_URI = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+W = f"{{{W_URI}}}"
 PANDOC_FROM = "docx+styles"
 PANDOC_TO = "markdown+bracketed_spans+fenced_divs+link_attributes+pipe_tables+tex_math_single_backslash"
+COMMENT_PARTS = {
+    "word/comments.xml",
+    "word/commentsExtended.xml",
+    "word/commentsExtensible.xml",
+    "word/commentsIds.xml",
+}
 AGENT_WORKFLOW_PASSES = [
     {
         "name": "comment_interpretation_and_revision_planning",
@@ -79,12 +83,72 @@ def run(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
+def endnote_conversion_command(raw_docx: Path, output_docx: Path, ris: Path) -> list[str]:
+    return [
+        "python3",
+        str(SCRIPT_DIR / "docx_numeric_to_endnote_temp.py"),
+        str(raw_docx),
+        str(output_docx),
+        "--ris",
+        str(ris),
+        "--keep-references",
+    ]
+
+
+def reference_list_to_ris_command(
+    source_docx: Path, ris: Path, metadata_ris: Path | None = None, require_metadata_match: bool = False
+) -> list[str]:
+    command = ["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(source_docx), str(ris)]
+    if metadata_ris is not None:
+        command.extend(["--metadata-ris", str(metadata_ris)])
+    if require_metadata_match:
+        command.append("--require-metadata-match")
+    return command
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def text_of(elem: ET.Element) -> str:
+    return "".join(t.text or "" for t in elem.findall(f".//{W}t"))
+
+
+def docx_visible_text(path: Path) -> str:
+    with zipfile.ZipFile(path) as zf:
+        root = ET.fromstring(zf.read("word/document.xml"))
+    return text_of(root)
+
+
+def temporary_citation_entries(path: Path) -> list[str]:
+    entries: list[str] = []
+    for citation in re.findall(r"\{([^{}]+)\}", docx_visible_text(path)):
+        entries.extend(re.sub(r"\s+", " ", part).strip() for part in citation.split(";") if part.strip())
+    return entries
+
+
+def stale_marker_counts(docx: Path) -> dict[str, int]:
+    with zipfile.ZipFile(docx) as zf:
+        data = "\n".join(zf.namelist()) + "\n"
+        for name in zf.namelist():
+            if name.endswith(".xml") or name.endswith(".rels"):
+                data += zf.read(name).decode("utf-8", "ignore")
+    tokens = [
+        "ADDIN EN.",
+        "ADDIN EN.CITE",
+        "ADDIN EN.REFLIST",
+        "EN.CWYW",
+        "commentRangeStart",
+        "commentRangeEnd",
+        "commentReference",
+    ]
+    counts = {token: data.count(token) for token in tokens}
+    counts["comment_parts"] = sum(1 for part in COMMENT_PARTS if part in data)
+    return counts
 
 
 def require_docx(path: Path) -> None:
