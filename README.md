@@ -40,6 +40,7 @@ Agent revision workflow over run-local markdown
         +--> rigor critique
         +--> tone and concision pass
         |
+        v
 Pandoc recompiled Word draft with EndNote temporary citations
         |
         +--> paired RIS generated from current references plus pinned metadata
@@ -129,6 +130,14 @@ inside the run directory. `finalize` recompiles the revised markdown with
 Pandoc, generates the paired RIS from the current recompiled reference list,
 uses the pinned metadata overlay to restore complete author/DOI fields, converts
 numeric citations to EndNote temporary citations, and runs sanity/sync checks.
+
+Citation handling is deterministic for a fixed run directory. The recompiled
+Word document defines which references exist and their numbering/order. The
+run-local `citation_metadata.ris` supplies complete metadata for matching
+titles, including full author lists, but cannot add references that are absent
+from the current document. New literature found with Asta must be inserted into
+the current revised markdown/reference list and recorded in the run directory
+before finalization.
 
 `docx-reference-list-to-ris` remains available as a lower-level utility. It
 reads the numbered reference list from a Word document and writes a matching RIS
