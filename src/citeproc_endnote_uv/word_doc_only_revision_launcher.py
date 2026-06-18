@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from difflib import SequenceMatcher
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -371,23 +372,41 @@ def stale_marker_counts(docx: Path) -> dict[str, int]:
         for name in zf.namelist():
             if name.endswith(".xml") or name.endswith(".rels"):
                 data += zf.read(name).decode("utf-8", "ignore")
-    tokens = ["ADDIN EN.CITE", "EN.CWYW", "commentRangeStart", "commentRangeEnd", "commentReference"]
+    tokens = [
+        "ADDIN EN.",
+        "ADDIN EN.CITE",
+        "ADDIN EN.REFLIST",
+        "EN.CWYW",
+        "commentRangeStart",
+        "commentRangeEnd",
+        "commentReference",
+    ]
     counts = {token: data.count(token) for token in tokens}
     counts["comment_parts"] = sum(1 for part in COMMENT_PARTS if part in data)
     return counts
 
 
-def paragraph_differences(source_docx: Path, raw_docx: Path) -> tuple[list[int], int, int]:
+def paragraph_differences(source_docx: Path, raw_docx: Path) -> tuple[list[int], list[int], int, int]:
     source_paragraphs = content_paragraphs(docx_roots(source_docx)[0])
     raw_paragraphs = content_paragraphs(docx_roots(raw_docx)[0])
-    changed = [
-        index
-        for index, (source_text, raw_text) in enumerate(zip(source_paragraphs, raw_paragraphs), start=1)
-        if source_text != raw_text
-    ]
-    if len(raw_paragraphs) > len(source_paragraphs):
-        changed.extend(range(len(source_paragraphs) + 1, len(raw_paragraphs) + 1))
-    return changed, len(source_paragraphs), len(raw_paragraphs)
+    changed_source: set[int] = set()
+    inserted_raw: set[int] = set()
+    matcher = SequenceMatcher(a=source_paragraphs, b=raw_paragraphs, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if tag == "insert":
+            inserted_raw.update(range(j1 + 1, j2 + 1))
+            continue
+        if tag == "delete":
+            changed_source.update(range(i1 + 1, i2 + 1))
+            continue
+        if tag == "replace":
+            changed_source.update(range(i1 + 1, i2 + 1))
+            extra = (j2 - j1) - (i2 - i1)
+            if extra > 0:
+                inserted_raw.update(range(j2 - extra + 1, j2 + 1))
+    return sorted(changed_source), sorted(inserted_raw), len(source_paragraphs), len(raw_paragraphs)
 
 
 def ensure_inside_run_dir(path: Path, run_dir: Path, label: str) -> Path:
@@ -417,7 +436,7 @@ def finalize(args: argparse.Namespace) -> int:
     if not raw_docx.exists():
         raise SystemExit(f"Missing raw revised DOCX generated in run directory: {raw_docx}")
 
-    changed, source_count, raw_count = paragraph_differences(source_docx, raw_docx)
+    changed, inserted, source_count, raw_count = paragraph_differences(source_docx, raw_docx)
     allowed = set(manifest["allowed_paragraphs"])
     appended_paragraphs = set(range(source_count + 1, raw_count + 1))
     reference_integrity = set(allowed_reference_integrity_changes(source_docx, raw_docx))
@@ -433,6 +452,11 @@ def finalize(args: argparse.Namespace) -> int:
         and is_citation_only_change(source_paragraphs[index - 1], raw_paragraphs[index - 1])
     }
     reference_region = {index for index in changed if source_ref_start and index >= source_ref_start}
+    allowed_insertions = {
+        raw_index
+        for raw_index in inserted
+        if any(source_index in allowed for source_index in (raw_index - 1, raw_index))
+    }
     unexpected = [
         index
         for index in changed
@@ -442,6 +466,9 @@ def finalize(args: argparse.Namespace) -> int:
         and index not in citation_only
         and index not in reference_region
     ]
+    unexpected_insertions = sorted(set(inserted) - appended_paragraphs - allowed_insertions)
+    if unexpected_insertions:
+        raise SystemExit(f"Unexpected inserted paragraphs outside Word-comment scope: {unexpected_insertions}")
     if unexpected:
         raise SystemExit(f"Unexpected paragraph changes outside Word-comment scope: {unexpected}")
 
@@ -489,6 +516,8 @@ def finalize(args: argparse.Namespace) -> int:
         "source_docx": source_docx.name,
         "source_sha256": manifest["source_sha256"],
         "changed_paragraphs": changed,
+        "inserted_paragraphs": inserted,
+        "allowed_inserted_paragraphs": sorted(allowed_insertions),
         "allowed_paragraphs": sorted(allowed),
         "appended_paragraphs": sorted(appended_paragraphs),
         "citation_only_paragraphs": sorted(citation_only),

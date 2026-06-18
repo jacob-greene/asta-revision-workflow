@@ -13,6 +13,7 @@ import argparse
 import re
 import zipfile
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -128,6 +129,40 @@ def parse_indices(value: str | None) -> set[int] | None:
     return indices
 
 
+def aligned_revised_paragraphs(source: list[str], revised: list[str]) -> dict[int, str]:
+    """Map 1-based source paragraph indices to their revised paragraph text.
+
+    The launcher permits comment-scoped paragraph splits. A positional zip would
+    compare every downstream paragraph to the wrong source paragraph after such
+    a split, so align on unchanged paragraph text and join split replacements.
+    """
+
+    mapping: dict[int, str] = {}
+    matcher = SequenceMatcher(a=source, b=revised, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for offset in range(i2 - i1):
+                mapping[i1 + offset + 1] = revised[j1 + offset]
+            continue
+        if tag == "delete":
+            continue
+        if tag == "insert":
+            continue
+        if tag == "replace":
+            source_span = i2 - i1
+            revised_span = j2 - j1
+            if source_span == revised_span:
+                for offset in range(source_span):
+                    mapping[i1 + offset + 1] = revised[j1 + offset]
+            elif source_span == 1:
+                mapping[i1 + 1] = clean(" ".join(revised[j1:j2]))
+            else:
+                for offset in range(source_span):
+                    raw_index = min(j1 + offset, j2 - 1)
+                    mapping[i1 + offset + 1] = revised[raw_index] if j1 < j2 else ""
+    return mapping
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, help="Original commented/source DOCX.")
@@ -140,19 +175,22 @@ def main() -> int:
 
     source = content_paragraphs(Path(args.source))
     revised = content_paragraphs(Path(args.revised))
+    revised_by_source = aligned_revised_paragraphs(source, revised)
     selected = parse_indices(args.paragraphs)
-    max_len = min(len(source), len(revised))
     failures: list[tuple[int, str]] = []
 
-    for paragraph_index in range(1, max_len + 1):
+    for paragraph_index in range(1, len(source) + 1):
         if selected is not None and paragraph_index not in selected:
             continue
+        if paragraph_index not in revised_by_source:
+            continue
         old = comparable(source[paragraph_index - 1])
-        new = comparable(revised[paragraph_index - 1])
+        revised_text = revised_by_source[paragraph_index]
+        new = comparable(revised_text)
         if old == new:
             continue
         old_sentences = {sentence.comparable for sentence in split_sentences(source[paragraph_index - 1])}
-        new_sentences = split_sentences(revised[paragraph_index - 1])
+        new_sentences = split_sentences(revised_text)
         for sentence_index, sentence in enumerate(new_sentences):
             if not sentence.comparable or sentence.comparable in old_sentences:
                 continue

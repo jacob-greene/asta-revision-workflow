@@ -240,7 +240,7 @@ def set_run_text(run: ET.Element, text: str) -> None:
 
 
 def run_contains_endnote_instr(run: ET.Element) -> bool:
-    return any("ADDIN EN.CITE" in (instr.text or "") for instr in run.findall(f".//{W}instrText"))
+    return any("ADDIN EN." in (instr.text or "") for instr in run.findall(f".//{W}instrText"))
 
 
 def run_field_char_type(run: ET.Element) -> str | None:
@@ -295,7 +295,52 @@ def flatten_endnote_fields(root: ET.Element) -> int:
             flattened += 1
             children = list(paragraph)
             index = index
+    flattened += remove_endnote_field_control_runs(root)
     return flattened
+
+
+def remove_endnote_field_control_runs(root: ET.Element) -> int:
+    """Remove EndNote field-code runs that can span multiple paragraphs.
+
+    EndNote bibliographies may be represented as one field beginning in the
+    first reference paragraph and ending in the last reference paragraph. The
+    displayed reference text is already plain text in separate runs, so removing
+    field-control and instruction runs preserves the visible bibliography while
+    removing stale EndNote state.
+    """
+
+    removed = 0
+    in_endnote_field = False
+    pending_begin: tuple[ET.Element, ET.Element] | None = None
+    for paragraph in root.findall(f".//{W}p"):
+        for run in list(paragraph):
+            if run.tag != f"{W}r":
+                continue
+            char_type = run_field_char_type(run)
+            instr = "".join(instr.text or "" for instr in run.findall(f".//{W}instrText"))
+            if char_type == "begin":
+                pending_begin = (paragraph, run)
+                continue
+            if "ADDIN EN." in instr:
+                if pending_begin is not None:
+                    begin_parent, begin_run = pending_begin
+                    if begin_run in list(begin_parent):
+                        begin_parent.remove(begin_run)
+                        removed += 1
+                pending_begin = None
+                in_endnote_field = True
+                paragraph.remove(run)
+                removed += 1
+                continue
+            if in_endnote_field and char_type in {"separate", "end"}:
+                paragraph.remove(run)
+                removed += 1
+                if char_type == "end":
+                    in_endnote_field = False
+                continue
+            if pending_begin is not None and run is not pending_begin[1]:
+                pending_begin = None
+    return removed
 
 
 def remove_endnote_docvars(settings_path: Path) -> int:
