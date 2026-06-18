@@ -1,5 +1,6 @@
 from citeproc_endnote_uv.docx_reference_list_to_ris import (
     author_list,
+    export_ris,
     parse_reference,
     split_reference_entries,
     write_record,
@@ -75,6 +76,29 @@ def test_reference_split_does_not_break_h3_variant_titles():
     assert "Lysine 27" in entries[1][1]
 
 
+def test_reference_export_stops_before_appended_methods_note(tmp_path):
+    source = tmp_path / "source.docx"
+    output = tmp_path / "refs.ris"
+    document_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Main text.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>1.Cao, R., and Zhang, Y. (2004). Example title. Molecular Cell 15, 57-67.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>AI use in writing: This note describes the revision workflow.</w:t></w:r></w:p>
+  </w:body>
+</w:document>
+"""
+    with ZipFile(source, "w", ZIP_DEFLATED) as zf:
+        zf.writestr("word/document.xml", document_xml)
+
+    count = export_ris(source, output)
+
+    assert count == 1
+    ris = output.read_text(encoding="utf-8")
+    assert "TI  - Example title" in ris
+    assert "AI use" not in ris
+
+
 def test_end_year_entry_with_ampersand_author_list_parses_title():
     reference = parse_reference(
         61,
@@ -102,6 +126,17 @@ def test_only_true_author_year_collisions_need_titles():
         "McCabe, 2012, EZH2 inhibition as a therapeutic strategy}"
     )
     assert make_temp_citation("3", references, ambiguous_keys) == "{Lee, 2015}"
+
+
+def test_duplicate_author_year_can_be_disambiguated_with_title():
+    references = {
+        1: Reference("Lee", "2015", "Genome-wide activities of Polycomb complexes"),
+        2: Reference("Lee", "2015", "Genome-wide activities of Polycomb complexes"),
+    }
+
+    assert make_temp_citation("1", references, {"Lee, 2015"}) == (
+        "{Lee, 2015, Genome-wide activities of Polycomb complexes}"
+    )
 
 
 def test_numeric_citation_conversion_adds_separator_before_temporary_cite(tmp_path):

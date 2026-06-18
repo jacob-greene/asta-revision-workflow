@@ -377,10 +377,10 @@ def convert(
         references = parse_ris_references(ris) if ris is not None else parse_references(reference_text)
         if not references:
             raise RuntimeError("Could not parse numbered references.")
-        author_year_titles: dict[str, set[str]] = {}
+        author_year_counts: dict[str, int] = {}
         for reference in references.values():
-            author_year_titles.setdefault(reference.author_year, set()).add(normalized_title(reference.title))
-        ambiguous_keys = {key for key, titles in author_year_titles.items() if len(titles) > 1}
+            author_year_counts[reference.author_year] = author_year_counts.get(reference.author_year, 0) + 1
+        ambiguous_keys = {key for key, count in author_year_counts.items() if count > 1}
 
         for paragraph in paragraphs[:ref_index]:
             preceding = ""

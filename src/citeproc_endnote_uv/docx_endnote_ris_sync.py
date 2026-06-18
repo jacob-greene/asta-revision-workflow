@@ -134,7 +134,8 @@ def main() -> int:
                         for record in candidates
                         if normalized_title(record.title).startswith(normalized_prefix)
                     ]
-                    if len(prefix_matches) == 1:
+                    matched_titles = {normalized_title(record.title) for record in prefix_matches}
+                    if len(prefix_matches) == 1 or len(matched_titles) == 1:
                         matched += 1
                         continue
                 missing.append(entry)

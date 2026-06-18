@@ -79,7 +79,13 @@ def reference_text_from_docx(docx: Path) -> str:
                 break
         if ref_index is None:
             raise RuntimeError("Could not locate numbered reference list in DOCX.")
-        return "\n".join(clean(text_of(p)) for p in paragraphs[ref_index:])
+        reference_paragraphs: list[str] = []
+        for paragraph in paragraphs[ref_index:]:
+            text = clean(text_of(paragraph))
+            if reference_paragraphs and not REF_START_RE.match(text):
+                break
+            reference_paragraphs.append(text)
+        return "\n".join(reference_paragraphs)
 
 
 def split_reference_entries(reference_text: str) -> list[tuple[int, str]]:

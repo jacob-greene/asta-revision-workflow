@@ -33,6 +33,7 @@ COMMENT_PARTS = {
     "word/commentsIds.xml",
 }
 REF_START_RE = re.compile(r"^\s*(\d{1,3})\.\s*(?=[A-Z])")
+CITATION_CLUSTER_RE = re.compile(r"(?<![A-Za-z0-9.])\d{1,3}(?:\s*-\s*\d{1,3})?(?:\s*,\s*\d{1,3}(?:\s*-\s*\d{1,3})?)*(?![A-Za-z0-9])")
 REVIEWER_TASKS = {
     "scientific_rigor_reviewer.md": (
         "Review only the launcher-scoped revised paragraphs. Be skeptical of new knowledge claims, "
@@ -158,6 +159,62 @@ def reference_numbers(paragraphs: list[str]) -> list[int]:
         if match:
             numbers.append(int(match.group(1)))
     return numbers
+
+
+def without_numeric_citation_clusters(text: str) -> str:
+    return re.sub(r"\s+", " ", CITATION_CLUSTER_RE.sub("", text)).strip()
+
+
+def is_citation_only_change(source_text: str, raw_text: str) -> bool:
+    return without_numeric_citation_clusters(source_text) == without_numeric_citation_clusters(raw_text)
+
+
+def reference_region_start(paragraphs: list[str]) -> int | None:
+    for index, paragraph in enumerate(paragraphs, start=1):
+        if REF_START_RE.match(paragraph):
+            return index
+    return None
+
+
+def allowed_reference_integrity_changes(source_docx: Path, raw_docx: Path) -> list[int]:
+    """Allow narrow bibliography repairs without opening prose outside comments."""
+
+    source_paragraphs = content_paragraphs(docx_roots(source_docx)[0])
+    raw_paragraphs = content_paragraphs(docx_roots(raw_docx)[0])
+    source_start = reference_region_start(source_paragraphs)
+    raw_start = reference_region_start(raw_paragraphs)
+    if source_start is None or raw_start is None or source_start != raw_start:
+        return []
+
+    allowed: list[int] = []
+    for index, (source_text, raw_text) in enumerate(zip(source_paragraphs, raw_paragraphs), start=1):
+        if index < source_start or source_text == raw_text:
+            continue
+        if REF_START_RE.match(source_text) and REF_START_RE.match(raw_text):
+            allowed.append(index)
+    return allowed
+
+
+def reference_duplicate_surplus(paragraphs: list[str]) -> int:
+    from citeproc_endnote_uv import docx_reference_list_to_ris as word_refs
+
+    seen: set[tuple[str, str]] = set()
+    surplus = 0
+    for paragraph in paragraphs:
+        match = REF_START_RE.match(paragraph)
+        if not match:
+            continue
+        ref = word_refs.parse_reference(int(match.group(1)), paragraph[match.end() :])
+        if ref is None:
+            continue
+        year = ref.year
+        title = ref.title
+        key = (re.sub(r"[^a-z0-9]+", " ", title.lower()).strip(), year)
+        if key in seen and key[0]:
+            surplus += 1
+        else:
+            seen.add(key)
+    return surplus
 
 
 def write_comments_markdown(comments: list[CommentAnchor], output: Path) -> None:
@@ -362,13 +419,36 @@ def finalize(args: argparse.Namespace) -> int:
 
     changed, source_count, raw_count = paragraph_differences(source_docx, raw_docx)
     allowed = set(manifest["allowed_paragraphs"])
-    reference_appends = set(range(source_count + 1, raw_count + 1))
-    unexpected = [index for index in changed if index not in allowed and index not in reference_appends]
+    appended_paragraphs = set(range(source_count + 1, raw_count + 1))
+    reference_integrity = set(allowed_reference_integrity_changes(source_docx, raw_docx))
+    source_paragraphs = content_paragraphs(docx_roots(source_docx)[0])
+    raw_paragraphs = content_paragraphs(docx_roots(raw_docx)[0])
+    source_ref_start = reference_region_start(source_paragraphs)
+    citation_only = {
+        index
+        for index in changed
+        if source_ref_start
+        and index < source_ref_start
+        and index <= len(raw_paragraphs)
+        and is_citation_only_change(source_paragraphs[index - 1], raw_paragraphs[index - 1])
+    }
+    reference_region = {index for index in changed if source_ref_start and index >= source_ref_start}
+    unexpected = [
+        index
+        for index in changed
+        if index not in allowed
+        and index not in appended_paragraphs
+        and index not in reference_integrity
+        and index not in citation_only
+        and index not in reference_region
+    ]
     if unexpected:
         raise SystemExit(f"Unexpected paragraph changes outside Word-comment scope: {unexpected}")
 
     run(["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(raw_docx), str(ris)])
-    if manifest["reference_count"] and len(reference_numbers(content_paragraphs(docx_roots(raw_docx)[0]))) < manifest["reference_count"]:
+    raw_reference_count = len(reference_numbers(content_paragraphs(docx_roots(raw_docx)[0])))
+    allowed_reference_deficit = reference_duplicate_surplus(source_paragraphs)
+    if manifest["reference_count"] and raw_reference_count + allowed_reference_deficit < manifest["reference_count"]:
         raise SystemExit("Revised raw DOCX has fewer numbered references than the source DOCX.")
     paragraph_arg = ",".join(str(index) for index in sorted(allowed)) if allowed else None
     support_cmd = [
@@ -391,12 +471,15 @@ def finalize(args: argparse.Namespace) -> int:
             str(final_docx),
             "--ris",
             str(ris),
+            "--short-title-disambiguation",
+            "--title-prefix-words",
+            "6",
             "--keep-references",
         ]
     )
     run(["unzip", "-t", str(final_docx)])
     run(["python3", str(SCRIPT_DIR / "docx_word_sanity.py"), str(final_docx)])
-    run(["python3", str(SCRIPT_DIR / "docx_endnote_ris_sync.py"), str(final_docx), str(ris)])
+    run(["python3", str(SCRIPT_DIR / "docx_endnote_ris_sync.py"), str(final_docx), str(ris), "--allow-title-prefix"])
 
     stale = {path.name: stale_marker_counts(path) for path in (raw_docx, final_docx)}
     if any(count for counts in stale.values() for count in counts.values()):
@@ -407,7 +490,10 @@ def finalize(args: argparse.Namespace) -> int:
         "source_sha256": manifest["source_sha256"],
         "changed_paragraphs": changed,
         "allowed_paragraphs": sorted(allowed),
-        "appended_reference_paragraphs": sorted(reference_appends),
+        "appended_paragraphs": sorted(appended_paragraphs),
+        "citation_only_paragraphs": sorted(citation_only),
+        "reference_region_paragraphs": sorted(reference_region),
+        "reference_integrity_paragraphs": sorted(reference_integrity),
         "final_docx": final_docx.name,
         "ris": ris.name,
         "reviewers": manifest.get("reviewers", {}),
