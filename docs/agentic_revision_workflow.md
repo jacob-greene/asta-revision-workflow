@@ -13,23 +13,23 @@ manuscript_v4.ris
 
 ## Inputs
 
-- Commented Word draft.
-- Comment extraction generated from the same Word draft using `docx-extract-comments`.
-- Any project-specific evidence files or literature search outputs needed to answer comments.
-- Optional BibTeX source when drafting from TeX.
+- Exactly one content input: the current commented Word draft.
+- Comment extraction generated from that same Word draft by `word-doc-only-revision start`.
+- Do not use archived DOCX files, Markdown exports, TeX sources, response files, cached Asta evidence, external RIS files, or BibTeX files as content or citation sources for the revision pass.
+- The paired RIS must be generated only from the reference list in the same revised Word document produced during the pass.
 - The scientific-writing skills in `codex-skills/`, especially `draft-scientific-paper` and `edit-scientific-prose`.
 
 ## Comment Extraction
 
-Extract Word comments from the DOCX package before planning edits:
+Launch the pass from the current Word document before planning edits:
 
 ```bash
-docx-extract-comments commented-draft.docx -o comments.md --format markdown
+word-doc-only-revision start commented-draft.docx --output-stem manuscript_v4
 ```
 
-This command reads `word/comments.xml` and the comment anchors in `word/document.xml`. It records the comment ID, comment text, anchored text, and full paragraph text.
+This command creates a run directory, copies the source Word document into it, records the source hash, extracts Word comments, and writes a manifest naming the only permitted generated artifacts for that pass.
 
-Do not use Pandoc, Markdown export, or plain text extraction as the comment source. Those routes can omit Word comments and make an actively commented draft appear un-commented.
+Do not use Pandoc, Markdown export, plain text extraction, archive RIS files, prior response files, or cached evidence as the comment or content source. Those routes can omit Word comments, make an actively commented draft appear un-commented, or restore stale prose.
 
 ## Agent Roles
 
@@ -44,8 +44,9 @@ Every revision pass must run all four roles below in order. Do not skip directly
 2. Evidence and specificity agent
    - Scan the full draft for vague, unsupported, or weakly justified claims, focusing on commented regions.
    - For every modified claim, first check whether the same sentence or an adjacent sentence has a citation that plausibly supports it.
-   - If nearby existing citations do not support the modified claim, query literature tools or Asta for the specific evidence gap and either add the citation, soften the claim, or remove it.
-   - Query literature tools only for targeted evidence gaps.
+   - If nearby existing citations do not support the modified claim, soften or remove the claim within the current Word-doc evidence base.
+   - Do not read cached Asta output, prior evidence JSON, prior response files, archive RIS files, or older drafts during the revision pass.
+   - Query literature tools or Asta only if the user explicitly authorizes a separate evidence-gathering pass; any resulting reference must be inserted into the current Word document before it can be used by the Word-doc-only revision pass.
    - Recommend citations, caveats, or softer wording.
 
 3. Rigor critique agent
@@ -61,6 +62,8 @@ Every revision pass must run all four roles below in order. Do not skip directly
 
 ## Implementation Rules
 
+- Start every Word-based revision with `word-doc-only-revision start SOURCE.docx`. This is the only supported launcher for commented Word drafts.
+- Do not start from a hand-run rebuild script for a prior version. Version-specific rebuild scripts may be used only after they have been regenerated from the launcher manifest and the current Word document, and only for the paragraph scope in that manifest.
 - Patch only commented sections and required adjacent text.
 - Do not revise un-commented paragraphs by default.
 - The only exception is adjacent text explicitly required by a section-level comment; the plan must identify that exception before implementation.
@@ -69,6 +72,7 @@ Every revision pass must run all four roles below in order. Do not skip directly
 - Do not introduce broad synthesis claims during implementation unless the rigor critique step explicitly approves the claim and identifies the supporting citations.
 - Do not rebuild prose from older TeX or Markdown. If EndNote temporary citations are required, first synchronize the exact revised `.docx` content into a fresh citation source.
 - Every pass must emit a revised `.docx` and a complete matching `.ris` generated from the full Word reference list used for that pass. The RIS must include every numbered reference in the Word bibliography, not only cited records, and the exporter must fail rather than silently skip malformed entries.
+- Do not merge, backfill, or repair the pass RIS from an archive RIS or another pass. If the current Word reference list lacks required metadata, fix the reference entry in the current Word-derived raw DOCX and regenerate the RIS from that DOCX.
 - Keep paragraph length appropriate for the document; for dense scientific prose, 4-5 sentences is a useful default ceiling.
 - Before converting numeric citations to EndNote temporary citations, run the modified-statement support check on the revised raw DOCX. Any modified sentence without a same-sentence or adjacent citation must be resolved by checking nearby existing citations, adding a citation, softening/removing the claim, or requerying literature tools for targeted evidence.
 - Also before conversion, run the plain numeric citation check on the revised raw DOCX. This catches intake failures where citations next to digit-containing scientific terms, such as `PRC2`, `H3K27me3`, or `H3.3K27M`, were not converted into superscript citation runs.
@@ -80,19 +84,30 @@ Every revision pass must run all four roles below in order. Do not skip directly
 
 ## Citation Pipeline for Word Drafts
 
-When a revision pass starts from a Word draft with numeric superscript citations and a numbered reference list, generate the RIS from the revised Word reference list:
+When a revision pass starts from a Word draft with numeric superscript citations and a numbered reference list, use the launcher. It accepts only the source Word document as the external content input:
 
 ```bash
-docx-extract-comments commented-draft.docx -o comments.md --format markdown
-docx-reference-list-to-ris manuscript_v4_with_refs.docx manuscript_v4.ris
-docx-modified-citation-support --source commented-draft.docx --revised manuscript_v4_with_refs.docx
-docx-plain-numeric-citation-check manuscript_v4_with_refs.docx
-docx-numeric-to-endnote-temp manuscript_v4_with_refs.docx manuscript_v4.docx --ris manuscript_v4.ris
-docx-word-sanity manuscript_v4.docx
-docx-endnote-ris-sync manuscript_v4.docx manuscript_v4.ris
+word-doc-only-revision start commented-draft.docx --output-stem manuscript_v4
 ```
 
-`docx-reference-list-to-ris` uses the Word reference list as the citation authority. This ensures references manually added by a collaborator in Word propagate into the RIS.
+After the revision agent creates the manifest-named raw revised DOCX inside the run directory, finalize the pass:
+
+```bash
+word-doc-only-revision finalize manuscript_v4_word_doc_only_run/manifest.json
+```
+
+The finalizer runs:
+
+```text
+docx-reference-list-to-ris
+docx-modified-citation-support
+docx-plain-numeric-citation-check
+docx-numeric-to-endnote-temp
+docx-word-sanity
+docx-endnote-ris-sync
+```
+
+`docx-reference-list-to-ris` uses the current Word reference list as the only citation authority. This ensures references manually added by a collaborator in Word propagate into the RIS without pulling metadata from stale external files.
 
 `docx-numeric-to-endnote-temp` converts numeric superscript citations into EndNote temporary citations. Pass `--ris` so citation metadata comes from the complete paired RIS rather than a lossy Word reference parse. When two distinct references share the same first author and year, the temporary citation includes the title so EndNote matching is unique. Duplicate entries for the same paper remain concise.
 
