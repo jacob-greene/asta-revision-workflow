@@ -51,23 +51,36 @@ Pandoc recompiled Word draft with EndNote temporary citations
 Import RIS into EndNote, then update citations in Word
 ```
 
-The agent workflow has four explicit passes:
+The agent workflow has five explicit passes:
 
-1. **Comment interpretation and revision planning**: read each Word comment with its surrounding text, create a concrete revision plan, and identify exactly which paragraphs may change.
-2. **Evidence and specificity**: check the commented regions for vague, unsupported, or overly broad claims; add targeted evidence or soften the wording.
-3. **Rigor critique**: review the proposed changes for scientific accuracy, overclaiming, missing caveats, and accidental changes to un-commented sections.
-4. **Tone and concision**: make the prose direct, readable, and concise while preserving the scientific meaning.
+1. **Revision implementation**: make scoped paragraph replacements from the current Word-derived markdown and record Asta requests for unsupported claims that should be retained.
+2. **Comment interpretation and revision planning**: read each Word comment with its surrounding text, create a concrete revision plan, and identify exactly which paragraphs may change.
+3. **Evidence and specificity**: check the commented regions for vague, unsupported, or overly broad claims; add targeted evidence or soften the wording.
+4. **Rigor critique**: review the proposed changes for scientific accuracy, overclaiming, missing caveats, and accidental changes to un-commented sections.
+5. **Tone and concision**: make the prose direct, readable, and concise while preserving the scientific meaning.
 
 `pandoc-word-revision run` is the complete launcher. It first creates the Pandoc
-run directory and all step-1 outputs. It then invokes the agent workflow command
-on those outputs, resolves required Asta requests, and finalizes the Word/RIS
-outputs. The launcher always requires a configured agent workflow command for
-step 2; pass `--agent-command` or set `PANDOC_REVISION_AGENT_COMMAND`. The agent
-runner is responsible for revising the run-local `*.revised.md`, performing the
-four review passes, recording any required Asta requests, and writing the audit.
+run directory and all step-1 outputs. If an Asta resolver is configured, the
+launcher then runs an Asta preflight before any agents start so missing
+authentication fails early and the Asta CLI can print its login URL. It then
+invokes the agent workflow command on those outputs, resolves required Asta
+requests, and finalizes the Word/RIS outputs. The launcher always requires a
+configured agent workflow command for step 2; pass `--agent-command` or set
+`PANDOC_REVISION_AGENT_COMMAND`. The agent runner is responsible for revising the
+run-local `*.revised.md`, performing the four review passes, recording any
+required Asta requests, and writing the audit.
+When `pandoc-word-revision-agent` is used and no subagent command is provided,
+it spawns Codex subagents with `gpt-5.3-codex-spark` at medium reasoning effort.
+This keeps the main coordinating session free to use a stronger model while
+holding routine reviewer costs down. Override this by setting
+`PANDOC_REVISION_SUBAGENT_COMMAND` or passing `--subagent-command`.
+If revision implementation creates pending required Asta requests and no Asta
+resolver is configured, the runner stops before reviewer passes. This avoids
+spending reviewer tokens on a draft that is already known to be blocked by
+missing evidence.
 Finalization refuses to compile until
 `agent_workflow/agent_workflow_audit.json` exists, names the same source DOCX
-hash, hashes the exact `*.revised.md` being finalized, marks all four passes
+hash, hashes the exact `*.revised.md` being finalized, marks all five passes
 complete, points to non-empty pass reports, and sets the required overall
 readiness checks to true.
 
@@ -76,13 +89,15 @@ The final implementation should be based only on the provided commented draft an
 Launch the complete Pandoc-centered Word workflow:
 
 ```bash
-PANDOC_REVISION_ASTA_COMMAND='asta-evidence-resolver --request {request_json} --output {output_json} --ris {output_ris}' \
-PANDOC_REVISION_AGENT_COMMAND='revision-agent --manifest {manifest} --run-dir {run_dir}' \
-  pandoc-word-revision run commented-draft.docx \
-    --output-stem manuscript_v4
+export PANDOC_REVISION_SUBAGENT_COMMAND='agent-runner --manifest {manifest} --run-dir {run_dir} --pass-name {pass_name} --task {task} --report {report}'
+export PANDOC_REVISION_ASTA_COMMAND='asta-evidence-resolver --request {request_json} --output {output_json} --ris {output_ris}'
+
+pandoc-word-revision run commented-draft.docx \
+  --output-stem manuscript_v4 \
+  --agent-command 'pandoc-word-revision-agent --manifest {manifest} --run-dir {run_dir}'
 ```
 
-Agent runners must revise `*.revised.md`, write all four report files,
+Agent runners must revise `*.revised.md`, write all five report files,
 record Asta needs in `agent_workflow/asta_requests.json`, and write
 `agent_workflow/agent_workflow_audit.json`. If the command string contains
 placeholders, `{manifest}`, `{run_dir}`, `{source_docx}`, `{source_markdown}`,
@@ -135,18 +150,19 @@ For workflows that begin from a `.docx` draft with numeric superscript citations
 ```bash
 pandoc-word-revision run commented-draft.docx \
   --output-stem manuscript_v4 \
-  --agent-command 'revision-agent --manifest {manifest} --run-dir {run_dir}' \
+  --agent-command 'pandoc-word-revision-agent --manifest {manifest} --run-dir {run_dir}' \
   --asta-command 'asta-evidence-resolver --request {request_json} --output {output_json} --ris {output_ris}'
 ```
 
 `pandoc-word-revision run` extracts text and style through Pandoc, extracts
 comments directly from Word XML, extracts complete citation metadata from
-embedded EndNote field records in the same source DOCX, runs the configured
-agent workflow, resolves required Asta requests, validates the required agent
-workflow audit, recompiles the revised markdown, generates the paired RIS from
-the current recompiled reference list, restores complete author/DOI fields from
-run-local metadata, converts numeric citations to EndNote temporary citations,
-and runs sanity/sync checks.
+embedded EndNote field records in the same source DOCX, runs an Asta preflight
+when an Asta resolver is configured, runs the configured agent workflow, resolves
+required Asta requests, validates the required agent workflow audit, recompiles
+the revised markdown, generates the paired RIS from the current recompiled
+reference list, restores complete author/DOI fields from run-local metadata,
+converts numeric citations to EndNote temporary citations, and runs sanity/sync
+checks.
 
 `pandoc-word-revision start` and `pandoc-word-revision finalize` remain
 available as lower-level debugging commands when a run needs manual inspection.
@@ -154,9 +170,14 @@ available as lower-level debugging commands when a run needs manual inspection.
 `launcher_profile.json` records per-step launcher timings, artifact sizes, and
 approximate token counts. `agent_inputs/agent_input_manifest.json` names the
 minimal recommended input files for each agent pass. Non-citation passes avoid
-loading `citation_metadata.ris` by default, and comment-scoped input files let
-planning, rigor, and tone reviewers inspect only the Word-comment anchors unless
-they need the full markdown.
+loading `citation_metadata.ris` by default. Evidence reviewers receive
+`agent_inputs/citation_metadata_scoped.md`, a compact summary of only citation
+records visible in Word-commented passages, plus compact Asta response summaries
+for newly resolved requests. Comment-scoped input files let planning, rigor, and
+tone reviewers inspect only the Word-comment anchors unless they need the full
+markdown. Rigor reviewers also receive `agent_workflow/scope_review.md`, a
+whole-document paragraph-change summary that marks whether each changed
+paragraph is within comment scope.
 
 Citation handling is deterministic for a fixed run directory. The recompiled
 Word document defines which references exist and their numbering/order. The
@@ -172,7 +193,10 @@ required item to `agent_workflow/asta_requests.json`. Remove or soften the claim
 only when the claim should not remain even with new evidence.
 `pandoc-word-revision finalize` resolves pending required requests before
 citation generation. Configure the resolver with `--asta-command` or
-`PANDOC_REVISION_ASTA_COMMAND`. The command may use placeholders:
+`PANDOC_REVISION_ASTA_COMMAND`. The complete `run` launcher also uses this
+resolver for an authentication preflight before step 2 starts; if Asta requires
+login, authenticate with the URL printed by the Asta CLI and rerun the launcher.
+The command may use placeholders:
 
 ```bash
 pandoc-word-revision finalize manuscript_run/manifest.json \

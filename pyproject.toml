@@ -22,6 +22,8 @@ docx-modified-citation-support = "citeproc_endnote_uv.docx_modified_citation_sup
 docx-plain-numeric-citation-check = "citeproc_endnote_uv.docx_plain_numeric_citation_check:main"
 docx-endnote-ris-sync = "citeproc_endnote_uv.docx_endnote_ris_sync:main"
 pandoc-word-revision = "citeproc_endnote_uv.pandoc_revision_launcher:main"
+pandoc-word-revision-agent = "citeproc_endnote_uv.pandoc_revision_agent_runner:main"
+asta-evidence-resolver = "citeproc_endnote_uv.asta_evidence_resolver:main"
 
 [build-system]
 requires = ["hatchling"]

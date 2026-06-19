@@ -43,6 +43,23 @@ COMMENT_PARTS = {
 }
 AGENT_WORKFLOW_PASSES = [
     {
+        "name": "revision_implementation",
+        "report": "revision_implementation_report.md",
+        "required_checks": ["revisions_applied", "comment_scope_preserved", "source_docx_only"],
+        "instruction": (
+            "Implement comment-scoped revisions from the current Word-derived markdown only. Do not reintroduce "
+            "deleted text from older drafts. Prefer precise replacement of commented paragraphs or immediately "
+            "adjacent paragraphs only when required by the comment. Do not add unsupported knowledge claims. "
+            "If a retained claim needs evidence beyond adjacent citations, add a required entry to "
+            "`agent_workflow/asta_requests.json`. Because nested shell access may be unavailable, return a "
+            "fenced JSON payload in this report with `markdown_replacements`, each containing exact `old` and "
+            "`new` strings to apply to the revised markdown. Do not return an empty `markdown_replacements` "
+            "list unless every comment is impossible to revise from the current DOCX. At minimum, implement "
+            "style, clarity, typo, structure, and redundancy edits for comments whose core evidence already "
+            "appears in adjacent citations; defer only the specific unsupported knowledge clauses to Asta."
+        ),
+    },
+    {
         "name": "comment_interpretation_and_revision_planning",
         "report": "comment_plan_report.md",
         "required_checks": ["comments_addressed", "revision_scope_defined", "source_docx_only"],
@@ -84,7 +101,9 @@ AGENT_WORKFLOW_PASSES = [
 ]
 def run(command: list[str]) -> None:
     print("+ " + " ".join(command))
-    subprocess.run(command, check=True)
+    result = subprocess.run(command)
+    if result.returncode != 0:
+        raise SystemExit(f"Command failed with exit code {result.returncode}: {' '.join(command)}")
 
 
 @contextmanager
@@ -97,8 +116,9 @@ def timed_step(profile: list[dict[str, object]] | None, name: str):
 
 def endnote_conversion_command(raw_docx: Path, output_docx: Path, ris: Path) -> list[str]:
     return [
-        "python3",
-        str(SCRIPT_DIR / "docx_numeric_to_endnote_temp.py"),
+        sys.executable,
+        "-m",
+        "citeproc_endnote_uv.docx_numeric_to_endnote_temp",
         str(raw_docx),
         str(output_docx),
         "--ris",
@@ -110,7 +130,13 @@ def endnote_conversion_command(raw_docx: Path, output_docx: Path, ris: Path) -> 
 def reference_list_to_ris_command(
     source_docx: Path, ris: Path, metadata_ris: Path | None = None, require_metadata_match: bool = False
 ) -> list[str]:
-    command = ["python3", str(SCRIPT_DIR / "docx_reference_list_to_ris.py"), str(source_docx), str(ris)]
+    command = [
+        sys.executable,
+        "-m",
+        "citeproc_endnote_uv.docx_reference_list_to_ris",
+        str(source_docx),
+        str(ris),
+    ]
     if metadata_ris is not None:
         command.extend(["--metadata-ris", str(metadata_ris)])
     if require_metadata_match:
@@ -235,17 +261,62 @@ def comment_scope_from_json(comments_json: Path, fallback_markdown: Path) -> str
     return "\n\n".join(chunks).strip() + "\n"
 
 
+def citation_numbers_from_text(text: str) -> list[int]:
+    numbers = sorted({int(value) for value in re.findall(r"\b\d+\b", text)})
+    return [number for number in numbers if number > 0]
+
+
+def write_scoped_citation_metadata(path: Path, citation_metadata: Path, scoped_text: str) -> None:
+    numbers = citation_numbers_from_text(scoped_text)
+    if not citation_metadata.exists():
+        path.write_text("No citation metadata RIS was available.\n", encoding="utf-8")
+        return
+    records = parse_ris_records(citation_metadata.read_text(encoding="utf-8", errors="ignore"))
+    rows = [
+        "# Scoped Citation Metadata",
+        "",
+        "Citation records below are limited to citation numbers visible in Word-commented passages.",
+        "",
+    ]
+    for number in numbers:
+        if number < 1 or number > len(records):
+            continue
+        record = records[number - 1]
+        title = (record.get("TI") or [""])[0]
+        year = (record.get("PY") or [""])[0]
+        journal = (record.get("JO") or [""])[0]
+        doi = (record.get("DO") or [""])[0]
+        authors = "; ".join(record.get("AU", [])[:6])
+        if len(record.get("AU", [])) > 6:
+            authors += "; et al."
+        rows.extend(
+            [
+                f"## Reference {number}",
+                "",
+                f"Title: {title}",
+                f"Year: {year}",
+                f"Authors: {authors}",
+                f"Journal: {journal}",
+                f"DOI: {doi}",
+                "",
+            ]
+        )
+    path.write_text("\n".join(rows).rstrip() + "\n", encoding="utf-8")
+
+
 def write_agent_inputs(run_dir: Path, manifest: dict, source_markdown: Path, revised_markdown: Path) -> dict[str, object]:
     inputs_dir = run_dir / "agent_inputs"
     inputs_dir.mkdir(exist_ok=True)
     comments_md = run_dir / manifest["comments"]["markdown"]
     comments_json = run_dir / manifest["comments"]["json"]
     citation_metadata = run_dir / manifest["citation_policy"]["metadata_overlay_ris"]
+    citation_summary = inputs_dir / "citation_metadata_scoped.md"
     source_scoped = inputs_dir / "comment_scoped_source.md"
     revised_scoped = inputs_dir / "comment_scoped_revised.md"
     agent_input_manifest = inputs_dir / "agent_input_manifest.json"
 
     scoped_text = comment_scope_from_json(comments_json, source_markdown)
+    write_scoped_citation_metadata(citation_summary, citation_metadata, scoped_text)
     source_scoped.write_text(scoped_text, encoding="utf-8")
     revised_scoped.write_text(
         scoped_text,
@@ -260,13 +331,17 @@ def write_agent_inputs(run_dir: Path, manifest: dict, source_markdown: Path, rev
         "manifest.json",
     ]
     passes = {
+        "revision_implementation": {
+            "recommended_inputs": common + [relative_to_run(comments_json, run_dir)],
+            "avoid_by_default": [relative_to_run(citation_metadata, run_dir)],
+        },
         "comment_interpretation_and_revision_planning": {
             "recommended_inputs": common + [relative_to_run(comments_json, run_dir)],
             "avoid_by_default": [relative_to_run(citation_metadata, run_dir)],
         },
         "evidence_and_specificity": {
-            "recommended_inputs": common + [relative_to_run(comments_json, run_dir), relative_to_run(citation_metadata, run_dir)],
-            "avoid_by_default": [],
+            "recommended_inputs": common + [relative_to_run(comments_json, run_dir), relative_to_run(citation_summary, run_dir)],
+            "avoid_by_default": [relative_to_run(citation_metadata, run_dir)],
         },
         "rigor_critique": {
             "recommended_inputs": common,
@@ -286,6 +361,7 @@ def write_agent_inputs(run_dir: Path, manifest: dict, source_markdown: Path, rev
         "comments_markdown": manifest["comments"]["markdown"],
         "comments_json": manifest["comments"]["json"],
         "citation_metadata_ris": manifest["citation_policy"]["metadata_overlay_ris"],
+        "scoped_citation_metadata": relative_to_run(citation_summary, run_dir),
         "passes": passes,
     }
     write_json(agent_input_manifest, data)
@@ -521,10 +597,10 @@ def parse_ris_records(text: str) -> list[dict[str, list[str]]]:
         line = raw_line.rstrip()
         if not line:
             continue
-        if len(line) < 6 or line[2:6] != "  - ":
+        if len(line) < 5 or line[2:5] != "  -":
             continue
         tag = line[:2]
-        value = line[6:].strip()
+        value = line[6:].strip() if len(line) > 5 else ""
         if tag == "TY":
             current = {"TY": [value]}
             continue
@@ -618,6 +694,34 @@ def run_agent_workflow_command(run_dir: Path, manifest_path: Path, command: str 
         )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     run(workflow_agent_command_parts(resolver, run_dir, manifest_path, manifest))
+
+
+def run_asta_preflight_command(run_dir: Path, manifest: dict, command: str | None) -> None:
+    resolver = command or os.environ.get("PANDOC_REVISION_ASTA_COMMAND")
+    if not resolver:
+        return
+
+    workflow = manifest.get("agent_workflow", {})
+    asta_dir = ensure_inside_run_dir(
+        run_dir / str(workflow.get("asta_resolutions_dir", "agent_workflow/asta")),
+        run_dir,
+        "Asta output directory",
+    )
+    preflight_dir = asta_dir / "preflight"
+    preflight_dir.mkdir(parents=True, exist_ok=True)
+    request_json = preflight_dir / "request.json"
+    output_json = preflight_dir / "response.json"
+    output_ris = preflight_dir / "response.ris"
+    write_json(
+        request_json,
+        {
+            "preflight": True,
+            "required": True,
+            "purpose": "Validate Asta CLI availability and authentication before launching revision agents.",
+        },
+    )
+    run(asta_command_parts(resolver, request_json, output_json, output_ris, run_dir, "preflight"))
+    validate_complete_ris(output_ris, "Asta preflight")
 
 
 def report_requests_asta(run_dir: Path, workflow: dict[str, object]) -> bool:
@@ -989,6 +1093,10 @@ def run_complete(args: argparse.Namespace) -> int:
         metadata_ris=args.metadata_ris,
     )
     start(start_args)
+    if args.asta_command:
+        os.environ["PANDOC_REVISION_ASTA_COMMAND"] = args.asta_command
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    run_asta_preflight_command(run_dir, manifest, args.asta_command)
     run_agent_workflow_command(run_dir, manifest_path, args.agent_command)
     return finalize(argparse.Namespace(manifest=str(manifest_path), asta_command=args.asta_command))
 
@@ -1031,11 +1139,11 @@ def finalize(args: argparse.Namespace) -> int:
     check_ris_cmd = reference_list_to_ris_command(raw_docx, ris, metadata_ris, require_metadata_match=metadata_ris is not None)
     check_ris_cmd.append("--check")
     run(check_ris_cmd)
-    run(["python3", str(SCRIPT_DIR / "docx_plain_numeric_citation_check.py"), str(raw_docx)])
+    run([sys.executable, "-m", "citeproc_endnote_uv.docx_plain_numeric_citation_check", str(raw_docx)])
     run(endnote_conversion_command(raw_docx, final_docx, ris))
     run(["unzip", "-t", str(final_docx)])
-    run(["python3", str(SCRIPT_DIR / "docx_word_sanity.py"), str(final_docx)])
-    run(["python3", str(SCRIPT_DIR / "docx_endnote_ris_sync.py"), str(final_docx), str(ris)])
+    run([sys.executable, "-m", "citeproc_endnote_uv.docx_word_sanity", str(final_docx)])
+    run([sys.executable, "-m", "citeproc_endnote_uv.docx_endnote_ris_sync", str(final_docx), str(ris)])
     run(check_ris_cmd)
 
     repeat_docx = final_docx.with_name(f"{final_docx.stem}.determinism-check{final_docx.suffix}")
