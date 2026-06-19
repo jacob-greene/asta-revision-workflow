@@ -496,6 +496,22 @@ def pass_prompt(manifest_path: Path, run_dir: Path, manifest: dict[str, Any], na
         (item["required_checks"] for item in required_passes(manifest) if item["name"] == name),
         [],
     )
+    required_skills = next(
+        (item.get("required_skills", []) for item in required_passes(manifest) if item["name"] == name),
+        [],
+    )
+    skill_instruction = ""
+    if required_skills:
+        skill_names = ", ".join(f"`{skill}`" for skill in required_skills)
+        skill_checks = ", ".join(f"`{skill.replace('-', '_')}_skill_used: true`" for skill in required_skills)
+        skill_instruction = (
+            "Required Codex skills: "
+            f"{skill_names}.\n"
+            "Use these skills the same way the main Codex agent would: invoke each named skill before doing this pass, "
+            "follow its SKILL.md guidance, and make the skill use explicit in the final report. If a required skill "
+            "is unavailable in the nested session, mark its check false and explain why. Required skill checks: "
+            f"{skill_checks}.\n\n"
+        )
 
     return (
         "You are executing one pass of an agent workflow for a manuscript revision.\n"
@@ -514,6 +530,7 @@ def pass_prompt(manifest_path: Path, run_dir: Path, manifest: dict[str, Any], na
         "Do not call shell commands. Do not use file-editing tools. Do not attempt to write files. "
         "The parent runner captures your final answer into the report target with --output-last-message, "
         "then applies any structured payload inside the run directory.\n\n"
+        f"{skill_instruction}"
         f"{task_note}\n\n"
         "Nested shell commands and direct file writes may be unavailable in sandboxed subagents. The run-local "
         "inputs needed for this pass are embedded below. Use these embedded inputs only.\n\n"

@@ -40,12 +40,25 @@ def test_agent_runner_executes_all_passes_and_writes_audit(tmp_path, monkeypatch
                         {
                             "name": "revision_implementation",
                             "report": "agent_workflow/reports/revision_implementation_report.md",
-                            "required_checks": ["revisions_applied", "comment_scope_preserved", "source_docx_only"],
+                            "required_checks": [
+                                "revisions_applied",
+                                "comment_scope_preserved",
+                                "source_docx_only",
+                                "draft_scientific_paper_skill_used",
+                                "edit_scientific_prose_skill_used",
+                            ],
+                            "required_skills": ["draft-scientific-paper", "edit-scientific-prose"],
                         },
                         {
                             "name": "comment_interpretation_and_revision_planning",
                             "report": "agent_workflow/reports/comment_plan_report.md",
-                            "required_checks": ["comments_addressed", "revision_scope_defined", "source_docx_only"],
+                            "required_checks": [
+                                "comments_addressed",
+                                "revision_scope_defined",
+                                "source_docx_only",
+                                "draft_scientific_paper_skill_used",
+                            ],
+                            "required_skills": ["draft-scientific-paper"],
                         },
                         {
                             "name": "evidence_and_specificity",
@@ -54,7 +67,9 @@ def test_agent_runner_executes_all_passes_and_writes_audit(tmp_path, monkeypatch
                                 "modified_claims_citation_checked",
                                 "unsupported_claims_resolved",
                                 "source_docx_only",
+                                "draft_scientific_paper_skill_used",
                             ],
+                            "required_skills": ["draft-scientific-paper"],
                         },
                         {
                             "name": "rigor_critique",
@@ -63,12 +78,20 @@ def test_agent_runner_executes_all_passes_and_writes_audit(tmp_path, monkeypatch
                                 "rigor_approved",
                                 "new_knowledge_claims_skeptically_reviewed",
                                 "uncommented_changes_reviewed",
+                                "draft_scientific_paper_skill_used",
                             ],
+                            "required_skills": ["draft-scientific-paper"],
                         },
                         {
                             "name": "tone_and_concision",
                             "report": "agent_workflow/reports/tone_concision_report.md",
-                            "required_checks": ["tone_reviewed", "redundancy_checked", "comment_scope_preserved"],
+                            "required_checks": [
+                                "tone_reviewed",
+                                "redundancy_checked",
+                                "comment_scope_preserved",
+                                "edit_scientific_prose_skill_used",
+                            ],
+                            "required_skills": ["edit-scientific-prose"],
                         },
                     ],
                 },
@@ -122,27 +145,33 @@ def test_agent_runner_executes_all_passes_and_writes_audit(tmp_path, monkeypatch
                 "revisions_applied: true",
                 "comment_scope_preserved: true",
                 "source_docx_only: true",
+                "draft_scientific_paper_skill_used: true",
+                "edit_scientific_prose_skill_used: true",
                 '```json\n{"markdown_replacements":[{"old":"# revised\\n","new":"# revised\\n\\nImplemented.\\n"}],"asta_requests":[]}\n```',
             ],
             "comment_interpretation_and_revision_planning": [
                 "comments_addressed: true",
                 "revision_scope_defined: true",
                 "source_docx_only: true",
+                "draft_scientific_paper_skill_used: true",
             ],
             "evidence_and_specificity": [
                 "modified_claims_citation_checked: true",
                 "unsupported_claims_resolved: true",
                 "source_docx_only: true",
+                "draft_scientific_paper_skill_used: true",
             ],
             "rigor_critique": [
                 "rigor_approved: true",
                 "new_knowledge_claims_skeptically_reviewed: true",
                 "uncommented_changes_reviewed: true",
+                "draft_scientific_paper_skill_used: true",
             ],
             "tone_and_concision": [
                 "tone_reviewed: true",
                 "redundancy_checked: true",
                 "comment_scope_preserved: true",
+                "edit_scientific_prose_skill_used: true",
             ],
         }[pass_name]
         report.write_text("\n".join(report_lines), encoding="utf-8")

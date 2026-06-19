@@ -53,11 +53,11 @@ Import RIS into EndNote, then update citations in Word
 
 The agent workflow has five explicit passes:
 
-1. **Revision implementation**: make scoped paragraph replacements from the current Word-derived markdown and record Asta requests for unsupported claims that should be retained.
-2. **Comment interpretation and revision planning**: read each Word comment with its surrounding text, create a concrete revision plan, and identify exactly which paragraphs may change.
-3. **Evidence and specificity**: check the commented regions for vague, unsupported, or overly broad claims; add targeted evidence or soften the wording.
-4. **Rigor critique**: review the proposed changes for scientific accuracy, overclaiming, missing caveats, and accidental changes to un-commented sections.
-5. **Tone and concision**: make the prose direct, readable, and concise while preserving the scientific meaning.
+1. **Revision implementation**: make scoped paragraph replacements from the current Word-derived markdown and record Asta requests for unsupported claims that should be retained. Requires `draft-scientific-paper` and `edit-scientific-prose`.
+2. **Comment interpretation and revision planning**: read each Word comment with its surrounding text, create a concrete revision plan, and identify exactly which paragraphs may change. Requires `draft-scientific-paper`.
+3. **Evidence and specificity**: check the commented regions for vague, unsupported, or overly broad claims; add targeted evidence or soften the wording. Requires `draft-scientific-paper`.
+4. **Rigor critique**: review the proposed changes for scientific accuracy, overclaiming, missing caveats, and accidental changes to un-commented sections. Requires `draft-scientific-paper`.
+5. **Tone and concision**: make the prose direct, readable, and concise while preserving the scientific meaning. Requires `edit-scientific-prose`.
 
 `pandoc-word-revision run` is the complete launcher. It first creates the Pandoc
 run directory and all step-1 outputs. If an Asta resolver is configured, the
@@ -74,6 +74,14 @@ it spawns Codex subagents with `gpt-5.3-codex-spark` at medium reasoning effort.
 This keeps the main coordinating session free to use a stronger model while
 holding routine reviewer costs down. Override this by setting
 `PANDOC_REVISION_SUBAGENT_COMMAND` or passing `--subagent-command`.
+Each subagent prompt names the required Codex skills for that pass and instructs
+the nested agent to use those skills as a Codex agent normally would. The runner
+does not copy full skill files into the run directory. Instead, it requires the
+subagent report to mark skill-use checks such as
+`draft_scientific_paper_skill_used: true` or
+`edit_scientific_prose_skill_used: true`; if the nested session cannot access a
+required skill, the pass must report that as false and the audit blocks
+finalization.
 If revision implementation creates pending required Asta requests and no Asta
 resolver is configured, the runner stops before reviewer passes. This avoids
 spending reviewer tokens on a draft that is already known to be blocked by

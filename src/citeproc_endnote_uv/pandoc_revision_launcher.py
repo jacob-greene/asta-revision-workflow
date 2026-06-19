@@ -45,7 +45,14 @@ AGENT_WORKFLOW_PASSES = [
     {
         "name": "revision_implementation",
         "report": "revision_implementation_report.md",
-        "required_checks": ["revisions_applied", "comment_scope_preserved", "source_docx_only"],
+        "required_checks": [
+            "revisions_applied",
+            "comment_scope_preserved",
+            "source_docx_only",
+            "draft_scientific_paper_skill_used",
+            "edit_scientific_prose_skill_used",
+        ],
+        "required_skills": ["draft-scientific-paper", "edit-scientific-prose"],
         "instruction": (
             "Implement comment-scoped revisions from the current Word-derived markdown only. Do not reintroduce "
             "deleted text from older drafts. Prefer precise replacement of commented paragraphs or immediately "
@@ -62,7 +69,13 @@ AGENT_WORKFLOW_PASSES = [
     {
         "name": "comment_interpretation_and_revision_planning",
         "report": "comment_plan_report.md",
-        "required_checks": ["comments_addressed", "revision_scope_defined", "source_docx_only"],
+        "required_checks": [
+            "comments_addressed",
+            "revision_scope_defined",
+            "source_docx_only",
+            "draft_scientific_paper_skill_used",
+        ],
+        "required_skills": ["draft-scientific-paper"],
         "instruction": (
             "Read the run-local source markdown, revised markdown, comments markdown/json, and manifest. "
             "Produce a comment-keyed plan, current outline, exact allowed revision scope, and any justified "
@@ -72,7 +85,13 @@ AGENT_WORKFLOW_PASSES = [
     {
         "name": "evidence_and_specificity",
         "report": "evidence_specificity_report.md",
-        "required_checks": ["modified_claims_citation_checked", "unsupported_claims_resolved", "source_docx_only"],
+        "required_checks": [
+            "modified_claims_citation_checked",
+            "unsupported_claims_resolved",
+            "source_docx_only",
+            "draft_scientific_paper_skill_used",
+        ],
+        "required_skills": ["draft-scientific-paper"],
         "instruction": (
             "Check each modified claim for same-sentence or adjacent citation support. If nearby existing "
             "citations do not support the claim, prioritize writing a required request to "
@@ -83,7 +102,13 @@ AGENT_WORKFLOW_PASSES = [
     {
         "name": "rigor_critique",
         "report": "rigor_critique_report.md",
-        "required_checks": ["rigor_approved", "new_knowledge_claims_skeptically_reviewed", "uncommented_changes_reviewed"],
+        "required_checks": [
+            "rigor_approved",
+            "new_knowledge_claims_skeptically_reviewed",
+            "uncommented_changes_reviewed",
+            "draft_scientific_paper_skill_used",
+        ],
+        "required_skills": ["draft-scientific-paper"],
         "instruction": (
             "Be highly skeptical of new knowledge claims, broad causal language, conserved/universal claims, "
             "and accidental edits to uncommented text. Approve only narrow claims with explicit support."
@@ -92,7 +117,13 @@ AGENT_WORKFLOW_PASSES = [
     {
         "name": "tone_and_concision",
         "report": "tone_concision_report.md",
-        "required_checks": ["tone_reviewed", "redundancy_checked", "comment_scope_preserved"],
+        "required_checks": [
+            "tone_reviewed",
+            "redundancy_checked",
+            "comment_scope_preserved",
+            "edit_scientific_prose_skill_used",
+        ],
+        "required_skills": ["edit-scientific-prose"],
         "instruction": (
             "Review topic sentences, paragraph flow, concision, and thesis tone. Flag restatement of nearby "
             "material and tone drift."
@@ -515,6 +546,9 @@ def write_agent_workflow_tasks(run_dir: Path, manifest: dict) -> dict[str, objec
                     "## Required Checks",
                     *[f"- `{check}`" for check in workflow_pass["required_checks"]],
                     "",
+                    "## Required Codex Skills",
+                    *[f"- `{skill}`" for skill in workflow_pass.get("required_skills", [])],
+                    "",
                     "Write the report to:",
                     f"`{relative_to_run(report_path, run_dir)}`",
                     "",
@@ -529,6 +563,7 @@ def write_agent_workflow_tasks(run_dir: Path, manifest: dict) -> dict[str, objec
             {
                 "name": workflow_pass["name"],
                 "required_checks": workflow_pass["required_checks"],
+                "required_skills": workflow_pass.get("required_skills", []),
                 "report": report_rel,
             }
         )
@@ -544,6 +579,7 @@ def write_agent_workflow_tasks(run_dir: Path, manifest: dict) -> dict[str, objec
                 "status": "pending",
                 "report": f"agent_workflow/reports/{workflow_pass['report']}",
                 "checks": {check: False for check in workflow_pass["required_checks"]},
+                "required_skills": workflow_pass.get("required_skills", []),
             }
             for workflow_pass in AGENT_WORKFLOW_PASSES
         ],
