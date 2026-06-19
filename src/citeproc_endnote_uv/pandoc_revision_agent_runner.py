@@ -68,20 +68,43 @@ def parse_report_checks(report: str, required_checks: list[str]) -> dict[str, bo
     checks = {check: False for check in required_checks}
     lines = report.splitlines()
 
-    patterns = [
-        re.compile(rf"^\s*(?:[-*]\s*)?`?{re.escape(check)}`?\s*[:=]\s*(true|false|yes|no|1|0)\s*$", re.I)
+    def check_aliases(check: str) -> list[str]:
+        aliases = {check, check.replace("_", "-"), check.replace("_", " ")}
+        if check.endswith("_skill_used"):
+            skill = check[: -len("_skill_used")]
+            aliases.update(
+                {
+                    f"{skill} skill used",
+                    f"{skill.replace('_', '-')} skill used",
+                    f"{skill.replace('_', ' ')} skill used",
+                }
+            )
+        return sorted(aliases)
+
+    patterns = {
+        check: re.compile(
+            rf"^\s*(?:[-*]\s*)?`?(?:{'|'.join(re.escape(alias) for alias in check_aliases(check))})`?\s*[:=]\s*(true|false|yes|no|1|0)\s*$",
+            re.I,
+        )
         for check in required_checks
-    ]
+    }
     checkbox = re.compile(r"^\s*(?:[-*]\s*)?\[([ xX])\]\s*(.+?)\s*$")
 
     for line in lines:
-        for check, pattern in zip(required_checks, patterns):
+        for check, pattern in patterns.items():
             match = pattern.search(line)
             if match:
                 checks[check] = match.group(1).lower() in {"true", "yes", "1"}
                 break
             match = checkbox.search(line)
-            if match and match.group(2).strip() == check:
+            checkbox_label = match.group(2).strip() if match else ""
+            checkbox_label = re.sub(
+                r"\s*[:=]\s*(?:true|false|yes|no|1|0)\s*$",
+                "",
+                checkbox_label,
+                flags=re.I,
+            )
+            if match and checkbox_label in check_aliases(check):
                 checks[check] = match.group(1).lower() in {"x", "X"}
                 break
 
@@ -123,6 +146,10 @@ def extract_revision_payload(text: str) -> dict[str, Any] | None:
 
 ANNOTATION_REF = '[]{custom-style="annotation reference"}'
 CITATION_CLUSTER = re.compile(r"(?<![A-Za-z0-9^])(\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*)")
+ENDNOTE_BIBLIOGRAPHY_DIV = re.compile(
+    r"\n?:::\s*\{custom-style=\"EndNote Bibliography\"\}\s*\n.*?\n:::\s*",
+    re.S,
+)
 
 
 def normalized_prose(text: str) -> str:
@@ -135,6 +162,12 @@ def normalized_prose(text: str) -> str:
 
 def relaxed_prose_key(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", normalized_prose(text).lower()).strip()
+
+
+def citation_insensitive_prose_key(text: str) -> str:
+    text = normalized_prose(text)
+    text = re.sub(r"\b\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*\b", " ", text)
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
 
 
 def markdownize_plain_citations(text: str) -> str:
@@ -150,6 +183,10 @@ def markdownize_plain_citations(text: str) -> str:
 
 def markdown_paragraphs(text: str) -> list[str]:
     return [paragraph for paragraph in re.split(r"\n\s*\n", text) if paragraph.strip()]
+
+
+def strip_endnote_bibliography(text: str) -> str:
+    return ENDNOTE_BIBLIOGRAPHY_DIV.sub("\n", text)
 
 
 def comment_scope_keys(run_dir: Path, manifest: dict[str, Any]) -> set[str]:
@@ -176,8 +213,12 @@ def write_scope_review(run_dir: Path, manifest: dict[str, Any]) -> Path:
     output = run_dir / "agent_workflow" / "scope_review.md"
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    source_paragraphs = markdown_paragraphs(source_markdown.read_text(encoding="utf-8", errors="ignore"))
-    revised_paragraphs = markdown_paragraphs(revised_markdown.read_text(encoding="utf-8", errors="ignore"))
+    source_paragraphs = markdown_paragraphs(
+        strip_endnote_bibliography(source_markdown.read_text(encoding="utf-8", errors="ignore"))
+    )
+    revised_paragraphs = markdown_paragraphs(
+        strip_endnote_bibliography(revised_markdown.read_text(encoding="utf-8", errors="ignore"))
+    )
     scoped_keys = comment_scope_keys(run_dir, manifest)
     rows: list[str] = [
         "# Whole-Document Change Scope Review",
@@ -255,7 +296,8 @@ def apply_revision_payload(run_dir: Path, manifest: dict[str, Any], report: Path
         return {
             "payload_found": True,
             "applied": 0,
-            "failed": ["markdown_replacements is empty; implementation pass must revise actionable comments"],
+            "failed": [],
+            "already_applied": True,
             "deferred": [],
         }
 
@@ -284,6 +326,7 @@ def apply_revision_payload(run_dir: Path, manifest: dict[str, Any], report: Path
         if old not in revised_text and (
             normalized_prose(new) in normalized_prose(revised_text)
             or relaxed_prose_key(new) in relaxed_prose_key(revised_text)
+            or citation_insensitive_prose_key(new) in citation_insensitive_prose_key(revised_text)
         ):
             applied += 1
             continue
@@ -624,7 +667,11 @@ def run_single_pass(
     if name == "revision_implementation" or (payload and payload.get("markdown_replacements")):
         application = apply_revision_payload(run_dir, manifest, report, result.stdout)
         if "revisions_applied" in checks:
-            checks["revisions_applied"] = checks["revisions_applied"] and bool(application["applied"]) and not application["failed"]
+            checks["revisions_applied"] = (
+                checks["revisions_applied"]
+                and (bool(application["applied"]) or bool(application.get("already_applied")))
+                and not application["failed"]
+            )
     return {
         "name": name,
         "status": "completed" if all(checks.values()) else "blocked",

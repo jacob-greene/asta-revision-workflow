@@ -61,9 +61,12 @@ AGENT_WORKFLOW_PASSES = [
             "`agent_workflow/asta_requests.json`. Because nested shell access may be unavailable, return a "
             "fenced JSON payload in this report with `markdown_replacements`, each containing exact `old` and "
             "`new` strings to apply to the revised markdown. Do not return an empty `markdown_replacements` "
-            "list unless every comment is impossible to revise from the current DOCX. At minimum, implement "
+            "list unless every actionable comment is already addressed in the current revised markdown or every "
+            "remaining comment is impossible to revise from the current DOCX. At minimum, implement "
             "style, clarity, typo, structure, and redundancy edits for comments whose core evidence already "
-            "appears in adjacent citations; defer only the specific unsupported knowledge clauses to Asta."
+            "appears in adjacent citations; defer only the specific unsupported knowledge clauses to Asta. "
+            "Do not expand section headings into full-sentence mechanistic claims or add citations to headings; "
+            "keep headings short unless the comment explicitly requests a heading change."
         ),
     },
     {
@@ -79,7 +82,10 @@ AGENT_WORKFLOW_PASSES = [
         "instruction": (
             "Read the run-local source markdown, revised markdown, comments markdown/json, and manifest. "
             "Produce a comment-keyed plan, current outline, exact allowed revision scope, and any justified "
-            "adjacent-paragraph exceptions."
+            "adjacent-paragraph exceptions. Treat a comment as addressed when unsupported requested specificity "
+            "was explicitly narrowed or omitted because adjacent citations or resolved Asta evidence did not "
+            "support it; do not require adding unsupported examples merely because a reviewer comment suggested "
+            "them."
         ),
     },
     {
