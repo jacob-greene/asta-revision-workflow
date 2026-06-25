@@ -40,22 +40,20 @@ Every revision pass must run all four roles below in order. Do not skip directly
 
 The Pandoc launcher enforces this. Before finalization, `agent_workflow/agent_workflow_audit.json` must exist, must hash the exact `*.revised.md` being finalized, must mark all four passes as completed, and must point to non-empty report files in `agent_workflow/reports/`.
 
-For efficiency, each task file names recommended minimal inputs from `agent_inputs/agent_input_manifest.json`. Planning, rigor, and tone passes should start from the comment-scoped files and avoid loading the full `citation_metadata.ris` unless they need citation details. The evidence pass may load the RIS because citation support is part of its role.
+For efficiency, each task file names recommended minimal inputs from `agent_inputs/agent_input_manifest.json`. Revision implementation should start from comment-scoped files, and rigorous/concision passes should avoid loading the full `citation_metadata.ris` unless explicitly needed. The Asta query-and-collation pass may load full citation context because evidence collation is its role.
 
-1. Comment interpretation and revision planning agent
+1. Revision implementation agent
    - Read the `*.comments.md` and `*.comments.json` outputs for every Word comment and its surrounding paragraph.
    - Read the run-local `*.source.md` before editing `*.revised.md`.
-   - Produce a concrete plan keyed to comment IDs.
-   - Produce a current outline based only on the commented draft text.
-   - List the exact paragraphs that may be revised.
+   - Implement scoped edits in `*.revised.md` from the current Word-derived source.
+   - Preserve scope; do not revise un-commented text except explicit adjacent exceptions.
+   - Convert any retained unsupported claims into pending Asta requests when citation support is missing.
 
-2. Evidence and specificity agent
-   - Scan the full draft for vague, unsupported, or weakly justified claims, focusing on commented regions.
-   - For every modified claim, first check whether the same sentence or an adjacent sentence has a citation that plausibly supports it.
-   - If nearby existing citations do not support the modified claim, soften or remove the claim within the current Word-doc evidence base.
-   - Do not read cached Asta output, prior evidence JSON, prior response files, archive RIS files, or older drafts during the revision pass.
-   - Query literature tools or Asta only if the user explicitly authorizes a separate evidence-gathering pass; any resulting reference must be inserted into the current run-local revised markdown and numbered reference list before it can be used by the Pandoc revision pass.
-   - Recommend citations, caveats, or softer wording.
+2. Asta query-and-collation agent
+   - Read `agent_workflow/asta_requests.json` and resolve required requests that the earlier pass emitted.
+   - Verify Asta outputs are produced and collated in run-local artifacts.
+   - Update the claim-level evidence status: supported claims, softened claims, or unresolved requests.
+   - Confirm unresolved claims are not left in `*.revised.md` without a documented justification.
 
 3. Rigor critique agent
    - Critique the plan for overclaiming, missing caveats, and logical inconsistency.
@@ -116,8 +114,7 @@ Finalization is blocked until the agent workflow audit is complete:
 
 ```text
 agent_workflow/agent_workflow_audit.json
-agent_workflow/reports/comment_plan_report.md
-agent_workflow/reports/evidence_specificity_report.md
+agent_workflow/reports/asta_query_and_collation_report.md
 agent_workflow/reports/rigor_critique_report.md
 agent_workflow/reports/tone_concision_report.md
 ```

@@ -37,8 +37,7 @@ pandoc-word-revision run
         v
 Configured agent revision workflow over run-local markdown
         |
-        +--> comment plan and outline
-        +--> evidence and specificity check
+        +--> Asta query and collation
         +--> rigor critique
         +--> tone and concision pass
         |
@@ -51,28 +50,31 @@ Pandoc recompiled Word draft with EndNote temporary citations
 Import RIS into EndNote, then update citations in Word
 ```
 
-The agent workflow has five explicit passes:
+The agent workflow has four explicit passes:
 
 1. **Revision implementation**: make scoped paragraph replacements from the current Word-derived markdown and record Asta requests for unsupported claims that should be retained. Requires `draft-scientific-paper` and `edit-scientific-prose`.
-2. **Comment interpretation and revision planning**: read each Word comment with its surrounding text, create a concrete revision plan, and identify exactly which paragraphs may change. Requires `draft-scientific-paper`.
-3. **Evidence and specificity**: check the commented regions for vague, unsupported, or overly broad claims; add targeted evidence or soften the wording. Requires `draft-scientific-paper`.
-4. **Rigor critique**: review the proposed changes for scientific accuracy, overclaiming, missing caveats, and accidental changes to un-commented sections. Requires `draft-scientific-paper`.
-5. **Tone and concision**: make the prose direct, readable, and concise while preserving the scientific meaning. Requires `edit-scientific-prose`.
+2. **Asta query and collation**: verify required Asta requests are resolved, then collate returned evidence into run-local artifacts before reviewer passes. Requires `draft-scientific-paper`.
+3. **Rigor critique**: review the proposed changes for scientific accuracy, overclaiming, missing caveats, and accidental changes to un-commented sections. Requires `draft-scientific-paper`.
+4. **Tone and concision**: make the prose direct, readable, and concise while preserving the scientific meaning. Requires `edit-scientific-prose`.
 
 `pandoc-word-revision run` is the complete launcher. It first creates the Pandoc
 run directory and all step-1 outputs. If an Asta resolver is configured, the
 launcher then runs an Asta preflight before any agents start so missing
 authentication fails early and the Asta CLI can print its login URL. It then
 invokes the agent workflow command on those outputs, resolves required Asta
-requests, and finalizes the Word/RIS outputs. The launcher always requires a
-configured agent workflow command for step 2; pass `--agent-command` or set
-`PANDOC_REVISION_AGENT_COMMAND`. The agent runner is responsible for revising the
-run-local `*.revised.md`, performing the four review passes, recording any
-required Asta requests, and writing the audit.
+requests, and finalizes the Word/RIS outputs.
+
+If `--agent-command` is not provided (and no `PANDOC_REVISION_AGENT_COMMAND` is set), Step 2 defaults to:
+
+```text
+codex exec --model gpt-5.3-codex-spark -c model_reasoning_effort="medium" ... pandoc-word-revision-agent --manifest ... --run-dir ...
+```
+
+You can override this for Step 2 with `--agent-command` or `PANDOC_REVISION_AGENT_COMMAND`.
+This default keeps both the coordinating run and routine reviewer passes on
+`gpt-5.3-codex-spark`.
 When `pandoc-word-revision-agent` is used and no subagent command is provided,
 it spawns Codex subagents with `gpt-5.3-codex-spark` at medium reasoning effort.
-This keeps the main coordinating session free to use a stronger model while
-holding routine reviewer costs down. Override this by setting
 `PANDOC_REVISION_SUBAGENT_COMMAND` or passing `--subagent-command`.
 Each subagent prompt names the required Codex skills for that pass and instructs
 the nested agent to use those skills as a Codex agent normally would. The runner
@@ -88,7 +90,7 @@ spending reviewer tokens on a draft that is already known to be blocked by
 missing evidence.
 Finalization refuses to compile until
 `agent_workflow/agent_workflow_audit.json` exists, names the same source DOCX
-hash, hashes the exact `*.revised.md` being finalized, marks all five passes
+hash, hashes the exact `*.revised.md` being finalized, marks all four passes
 complete, points to non-empty pass reports, and sets the required overall
 readiness checks to true.
 
@@ -105,7 +107,7 @@ pandoc-word-revision run commented-draft.docx \
   --agent-command 'pandoc-word-revision-agent --manifest {manifest} --run-dir {run_dir}'
 ```
 
-Agent runners must revise `*.revised.md`, write all five report files,
+Agent runners must revise `*.revised.md`, write all four report files,
 record Asta needs in `agent_workflow/asta_requests.json`, and write
 `agent_workflow/agent_workflow_audit.json`. If the command string contains
 placeholders, `{manifest}`, `{run_dir}`, `{source_docx}`, `{source_markdown}`,
@@ -195,7 +197,7 @@ bibliography says `et al.`. During finalization, abbreviated visible references
 must match the run-local metadata; otherwise the workflow fails rather than
 emitting truncated authors.
 
-If the evidence pass finds a modified claim that is not supported by adjacent
+If the Asta query-and-collation pass finds a modified claim that is not supported by adjacent
 citations, it must prioritize Asta for claims that should be retained: add a
 required item to `agent_workflow/asta_requests.json`. Remove or soften the claim
 only when the claim should not remain even with new evidence.
@@ -251,6 +253,7 @@ Scientific-writing skills live in [codex-skills/](codex-skills/). Symlink the sk
 ```bash
 ln -s "$PWD/codex-skills/edit-scientific-prose" ~/.codex/skills/edit-scientific-prose
 ln -s "$PWD/codex-skills/draft-scientific-paper" ~/.codex/skills/draft-scientific-paper
+ln -s "$PWD/codex-skills/asta-query-and-collation" ~/.codex/skills/asta-query-and-collation
 ```
 
 The skills are independent of the citation tools but are bundled here so a project can use one repository for prose guidance, citation conversion, and reproducible revision workflow conventions.

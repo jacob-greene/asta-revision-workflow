@@ -35,6 +35,11 @@ W_URI = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 W = f"{{{W_URI}}}"
 PANDOC_FROM = "docx+styles"
 PANDOC_TO = "markdown+bracketed_spans+fenced_divs+link_attributes+pipe_tables+tex_math_single_backslash"
+DEFAULT_AGENT_WORKFLOW_COMMAND = (
+    'codex exec --model gpt-5.3-codex-spark -c model_reasoning_effort="medium" '
+    "--skip-git-repo-check "
+    "pandoc-word-revision-agent --manifest {manifest} --run-dir {run_dir}"
+)
 COMMENT_PARTS = {
     "word/comments.xml",
     "word/commentsExtended.xml",
@@ -52,13 +57,15 @@ AGENT_WORKFLOW_PASSES = [
             "draft_scientific_paper_skill_used",
             "edit_scientific_prose_skill_used",
         ],
-        "required_skills": ["draft-scientific-paper", "edit-scientific-prose"],
+        "required_skills": ["draft-scientific-paper", "edit-scientific-prose", "asta-query-and-collation"],
         "instruction": (
             "Implement comment-scoped revisions from the current Word-derived markdown only. Do not reintroduce "
-            "deleted text from older drafts. Prefer precise replacement of commented paragraphs or immediately "
-            "adjacent paragraphs only when required by the comment. Do not add unsupported knowledge claims. "
-            "If a retained claim needs evidence beyond adjacent citations, add a required entry to "
-            "`agent_workflow/asta_requests.json`. Because nested shell access may be unavailable, return a "
+            "deleted text from older drafts. Prioritize precise replacement of commented paragraphs or immediately "
+            "adjacent paragraphs only when required by the comment. Prioritize Asta for retained unsupported or weak "
+            "claims. If a retained claim needs citation or knowledge support beyond adjacent claims, add a required entry "
+            "to `agent_workflow/asta_requests.json` and include a matching marker under `required_knowledge_checks` in the "
+            "JSON payload. If a comment is pure rephrasing or style/flow cleanup without changing factual claim content, "
+            "do not add an Asta request. Because nested shell access may be unavailable, return a "
             "fenced JSON payload in this report with `markdown_replacements`, each containing exact `old` and "
             "`new` strings to apply to the revised markdown. Do not return an empty `markdown_replacements` "
             "list unless every actionable comment is already addressed in the current revised markdown or every "
@@ -70,39 +77,23 @@ AGENT_WORKFLOW_PASSES = [
         ),
     },
     {
-        "name": "comment_interpretation_and_revision_planning",
-        "report": "comment_plan_report.md",
-        "required_checks": [
-            "comments_addressed",
-            "revision_scope_defined",
-            "source_docx_only",
-            "draft_scientific_paper_skill_used",
-        ],
-        "required_skills": ["draft-scientific-paper"],
-        "instruction": (
-            "Read the run-local source markdown, revised markdown, comments markdown/json, and manifest. "
-            "Produce a comment-keyed plan, current outline, exact allowed revision scope, and any justified "
-            "adjacent-paragraph exceptions. Treat a comment as addressed when unsupported requested specificity "
-            "was explicitly narrowed or omitted because adjacent citations or resolved Asta evidence did not "
-            "support it; do not require adding unsupported examples merely because a reviewer comment suggested "
-            "them."
-        ),
-    },
-    {
-        "name": "evidence_and_specificity",
-        "report": "evidence_specificity_report.md",
+        "name": "asta_query_and_collation",
+        "report": "asta_query_and_collation_report.md",
         "required_checks": [
             "modified_claims_citation_checked",
             "unsupported_claims_resolved",
+            "asta_requests_collated",
             "source_docx_only",
             "draft_scientific_paper_skill_used",
         ],
-        "required_skills": ["draft-scientific-paper"],
+        "required_skills": ["draft-scientific-paper", "asta-query-and-collation"],
         "instruction": (
-            "Check each modified claim for same-sentence or adjacent citation support. If nearby existing "
-            "citations do not support the claim, prioritize writing a required request to "
-            "`agent_workflow/asta_requests.json` so the launcher can query Asta before finalize. "
-            "Soften or remove the claim only when the claim should not be retained even with new evidence."
+            "Use the current artifacts to verify and execute the Asta-driven evidence policy before implementation is finalized. "
+            "Run or verify Asta resolution for every required request in `agent_workflow/asta_requests.json`, then "
+            "collate any resolved outputs in `agent_workflow/asta`, `agent_workflow/asta_reference_additions.json`, and "
+            "related response JSON files for reviewer visibility. Confirm modified claims without adjacent evidence were resolved "
+            "or intentionally softened; do not allow unsupported knowledge claims to remain unresolved. "
+            "Mark whether required requests were reviewed and resolved or explicitly not needed."
         ),
     },
     {
@@ -116,8 +107,8 @@ AGENT_WORKFLOW_PASSES = [
         ],
         "required_skills": ["draft-scientific-paper"],
         "instruction": (
-            "Be highly skeptical of new knowledge claims, broad causal language, conserved/universal claims, "
-            "and accidental edits to uncommented text. Approve only narrow claims with explicit support."
+            "Be highly skeptical of new knowledge claims, causal/generalized statements, broad conserved/universal language, "
+            "and accidental edits to uncommented text. Only approve narrowly scoped edits with explicit scope and evidence."
         ),
     },
     {
@@ -131,8 +122,9 @@ AGENT_WORKFLOW_PASSES = [
         ],
         "required_skills": ["edit-scientific-prose"],
         "instruction": (
-            "Review topic sentences, paragraph flow, concision, and thesis tone. Flag restatement of nearby "
-            "material and tone drift."
+            "Implement wording changes to improve flow and concision while preserving meaning and scope. Reduce redundancy "
+            "and repetitive phrasing, then review topic sentences and tone. If edits are needed, include a fenced JSON payload "
+            "with exact `old` and `new` replacement strings in the final report."
         ),
     },
 ]
@@ -372,21 +364,24 @@ def write_agent_inputs(run_dir: Path, manifest: dict, source_markdown: Path, rev
             "recommended_inputs": common + [relative_to_run(comments_json, run_dir)],
             "avoid_by_default": [relative_to_run(citation_metadata, run_dir)],
         },
-        "comment_interpretation_and_revision_planning": {
-            "recommended_inputs": common + [relative_to_run(comments_json, run_dir)],
-            "avoid_by_default": [relative_to_run(citation_metadata, run_dir)],
-        },
-        "evidence_and_specificity": {
-            "recommended_inputs": common + [relative_to_run(comments_json, run_dir), relative_to_run(citation_summary, run_dir)],
+        "asta_query_and_collation": {
+            "recommended_inputs": common
+            + [
+                relative_to_run(comments_json, run_dir),
+                relative_to_run(citation_summary, run_dir),
+                str(Path("agent_workflow") / "asta_requests.json"),
+                str(Path("agent_workflow") / "asta_reference_additions.json"),
+                str(Path("agent_workflow") / "asta" / "responses"),
+            ],
             "avoid_by_default": [relative_to_run(citation_metadata, run_dir)],
         },
         "rigor_critique": {
-            "recommended_inputs": common,
+            "recommended_inputs": common + [relative_to_run(citation_summary, run_dir)],
             "avoid_by_default": [relative_to_run(citation_metadata, run_dir)],
         },
         "tone_and_concision": {
             "recommended_inputs": common,
-            "avoid_by_default": [relative_to_run(citation_metadata, run_dir), relative_to_run(comments_json, run_dir)],
+            "avoid_by_default": [relative_to_run(citation_metadata, run_dir)],
         },
     }
     data = {
@@ -727,13 +722,7 @@ def workflow_agent_command_parts(command: str, run_dir: Path, manifest_path: Pat
 def run_agent_workflow_command(run_dir: Path, manifest_path: Path, command: str | None) -> None:
     resolver = command or os.environ.get("PANDOC_REVISION_AGENT_COMMAND")
     if not resolver:
-        raise SystemExit(
-            "The complete launcher requires an agent workflow command. "
-            "Set PANDOC_REVISION_AGENT_COMMAND or pass --agent-command so step 2 can revise, review, "
-            "write agent reports, update agent_workflow/asta_requests.json when needed, and write "
-            "agent_workflow/agent_workflow_audit.json. The launcher no longer falls back to a "
-            "manual handoff."
-        )
+        resolver = DEFAULT_AGENT_WORKFLOW_COMMAND
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     run(workflow_agent_command_parts(resolver, run_dir, manifest_path, manifest))
 
@@ -1259,7 +1248,9 @@ def main(argv: list[str] | None = None) -> int:
             "Command that runs the required revision agents. If the command string contains placeholders, "
             "{manifest}, {run_dir}, {source_docx}, {source_markdown}, {revised_markdown}, {comments_markdown}, "
             "{comments_json}, {audit_file}, and {asta_requests} are expanded. Otherwise the launcher appends "
-            "--manifest and --run-dir. May also be set with PANDOC_REVISION_AGENT_COMMAND."
+            "--manifest and --run-dir. May also be set with PANDOC_REVISION_AGENT_COMMAND. "
+            "If omitted, Step 2 defaults to a `codex exec` invocation running "
+            "`pandoc-word-revision-agent` with `gpt-5.3-codex-spark`."
         ),
     )
     run_parser.add_argument(

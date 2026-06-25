@@ -354,7 +354,7 @@ def test_workflow_agent_command_parts_append_manifest_and_run_dir(tmp_path):
     assert command == ["agent-runner", "--strict", "--manifest", str(manifest_path), "--run-dir", str(tmp_path)]
 
 
-def test_agent_workflow_command_requires_configured_runner(tmp_path, monkeypatch):
+def test_agent_workflow_command_defaults_to_internal_codex_runner(tmp_path, monkeypatch):
     calls = []
 
     def fake_run(command):
@@ -363,8 +363,26 @@ def test_agent_workflow_command_requires_configured_runner(tmp_path, monkeypatch
     monkeypatch.setattr("citeproc_endnote_uv.pandoc_revision_launcher.run", fake_run)
     manifest_path = tmp_path / "manifest.json"
 
-    with pytest.raises(SystemExit, match="requires an agent workflow command"):
-        run_agent_workflow_command(tmp_path, manifest_path, None)
+    manifest = {
+        "workflow": "pandoc-word-revision",
+        "source_docx": "source.docx",
+        "generated_artifacts": {
+            "source_markdown": "manuscript.source.md",
+            "revised_markdown": "manuscript.revised.md",
+            "media_dir": "media",
+            "raw_docx": "manuscript.raw.docx",
+            "final_docx": "manuscript.docx",
+            "ris": "manuscript.ris",
+        },
+        "comments": {"markdown": "manuscript.comments.md", "json": "manuscript.comments.json"},
+        "agent_workflow": {
+            "audit_file": "agent_workflow/agent_workflow_audit.json",
+            "asta_requests": "agent_workflow/asta_requests.json",
+        },
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    run_agent_workflow_command(tmp_path, manifest_path, None)
 
-    assert calls == []
-
+    assert calls
+    assert calls[0][0] == "codex"
+    assert calls[0][1:4] == ["exec", "--model", "gpt-5.3-codex-spark"]

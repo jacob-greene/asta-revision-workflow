@@ -111,6 +111,78 @@ def parse_report_checks(report: str, required_checks: list[str]) -> dict[str, bo
     return checks
 
 
+def required_knowledge_requests(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    checks: set[str] = set()
+
+    def add_entry(value: Any) -> None:
+        if isinstance(value, str):
+            if value.strip():
+                checks.add(value.strip())
+            return
+        if isinstance(value, dict):
+            if value.get("required") is False:
+                return
+            marker = (
+                value.get("claim")
+                or value.get("request")
+                or value.get("query")
+                or value.get("text")
+                or value.get("old")
+                or value.get("citation_needs")
+                or value.get("scope")
+            )
+            if isinstance(marker, str) and marker.strip():
+                checks.add(marker.strip())
+            if value.get("requires_knowledge_check") or value.get("requires_citation") or value.get("citation_check"):
+                checks.add("required_knowledge_check")
+
+    for key in (
+        "knowledge_checks",
+        "knowledge_check_requests",
+        "required_knowledge_checks",
+        "citation_checks",
+        "citation_requests",
+        "evidence_checks",
+        "evidence_requests",
+    ):
+        value = payload.get(key)
+        if isinstance(value, list):
+            for entry in value:
+                add_entry(entry)
+        elif value is not None:
+            add_entry(value)
+
+    for flag in (
+        "knowledge_check_required",
+        "requires_knowledge_check",
+        "needs_knowledge_check",
+        "requires_evidence",
+    ):
+        if payload.get(flag):
+            checks.add("required_knowledge_check")
+    return sorted(checks)
+
+
+def required_asta_request_count(payload: Any) -> int:
+    if not isinstance(payload, dict):
+        return 0
+    requests = payload.get("asta_requests", [])
+    if not isinstance(requests, list):
+        return 0
+    count = 0
+    for request in requests:
+        if isinstance(request, dict):
+            if request.get("required") is False:
+                continue
+            count += 1
+            continue
+        if isinstance(request, str) and request.strip():
+            count += 1
+    return count
+
+
 def json_payload_candidates(text: str) -> list[str]:
     candidates = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.S | re.I)
     stripped = text.strip()
@@ -583,6 +655,7 @@ def pass_prompt(manifest_path: Path, run_dir: Path, manifest: dict[str, Any], na
         "and rerun the pass. For the `revision_implementation` pass, this JSON payload is required.\n"
         "```json\n"
         "{\"markdown_replacements\":[{\"old\":\"exact original markdown\",\"new\":\"replacement markdown\"}],"
+        "\"required_knowledge_checks\":[\"claim text or evidence request\"],"
         "\"asta_requests\":[]}\n"
         "```\n"
         "The parent runner applies these exact replacements inside the run directory after the subagent exits.\n\n"
@@ -678,6 +751,7 @@ def run_single_pass(
         "report": report_rel,
         "checks": checks,
         **({"application": application} if application is not None else {}),
+        **({"payload": payload} if name == "revision_implementation" else {}),
     }
 
 
@@ -700,25 +774,33 @@ def write_audit(
     if passes:
         pass_status = {item["name"]: item for item in passes}
         check_implementation = pass_status.get("revision_implementation", {})
-        check_plan = pass_status.get("comment_interpretation_and_revision_planning", {})
-        check_evidence = pass_status.get("evidence_and_specificity", {})
         check_rigor = pass_status.get("rigor_critique", {})
+        implementation_checks = check_implementation.get("checks", {})
+        overall_evidence = pass_status.get("asta_query_and_collation", {}).get("checks", {})
+
+        comments_fully_addressed = (
+            implementation_checks.get("comment_scope_preserved", False)
+            and implementation_checks.get("revisions_applied", False)
+        )
         overall["all_comments_addressed"] = (
-            check_implementation.get("checks", {}).get("revisions_applied", False)
-            and check_plan.get("checks", {}).get("comments_addressed", False)
+            implementation_checks.get("revisions_applied", False) and comments_fully_addressed
         )
         overall["modified_claims_have_adjacent_citation_or_resolution"] = (
-            check_evidence.get("checks", {}).get("modified_claims_citation_checked", False)
-            and check_evidence.get("checks", {}).get("unsupported_claims_resolved", False)
+            overall_evidence.get("modified_claims_citation_checked", False)
+            and overall_evidence.get("unsupported_claims_resolved", False)
+            and (
+                overall_evidence.get("asta_requests_collated", True)
+                if overall_evidence
+                else False
+            )
         )
         overall["uncommented_changes_justified"] = (
             check_rigor.get("checks", {}).get("rigor_approved", False)
             and check_rigor.get("checks", {}).get("uncommented_changes_reviewed", False)
         )
         overall["citation_integrity_reviewed"] = (
-            check_evidence.get("checks", {}).get("source_docx_only", False)
-            if check_evidence
-            else False
+            implementation_checks.get("source_docx_only", False)
+            and overall_evidence.get("source_docx_only", False)
         )
         overall["ready_for_finalize"] = all(item["status"] == "completed" for item in passes)
 
@@ -780,18 +862,19 @@ def run_all(manifest: Path, run_dir: Path, subagent_command: str | None) -> int:
                 "Revision implementation pass did not complete; stopping before reviewer passes. "
                 f"See {run_dir / result['report']}."
             )
+
         if pass_definition["name"] == "revision_implementation":
-            if resolve_pending_asta_requests(run_dir, manifest_data, reason="Revision implementation"):
-                result = run_single_pass(run_dir, manifest, manifest_data, pass_definition, subagent_command)
-                completed[-1] = result
-                if result["status"] != "completed":
-                    write_audit(run_dir, manifest_data, completed)
-                    raise SystemExit(
-                        "Revision implementation remained blocked after Asta resolution; stopping before reviewer passes. "
-                        f"See {run_dir / result['report']}."
-                    )
-        if pass_definition["name"] == "evidence_and_specificity":
-            if resolve_pending_asta_requests(run_dir, manifest_data, reason="Evidence review"):
+            payload = result.get("payload")
+            required_checks = required_knowledge_requests(payload)
+            if required_checks and required_asta_request_count(payload) == 0:
+                raise SystemExit(
+                    "Revision implementation identified knowledge/citation checks but emitted no required `asta_requests` payload entries. "
+                    "For any fact-like revision that needs evidence or claim validation, include those checks in "
+                    "`required_knowledge_checks` and add the matching required entries to `asta_requests`."
+                )
+
+        if pass_definition["name"] == "asta_query_and_collation":
+            if resolve_pending_asta_requests(run_dir, manifest_data, reason="Asta query and collation"):
                 result = run_single_pass(run_dir, manifest, manifest_data, pass_definition, subagent_command)
                 completed[-1] = result
 
