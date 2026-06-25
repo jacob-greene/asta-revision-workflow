@@ -14,25 +14,25 @@ manuscript_v4.ris
 ## Inputs
 
 - Exactly one content input: the current commented Word draft.
-- Text/style extraction generated from that Word draft by `pandoc-word-revision start`.
-- Comment extraction generated from that same Word draft by `pandoc-word-revision start`.
+- Text/style extraction generated from that Word draft by `asta-revision start`.
+- Comment extraction generated from that same Word draft by `asta-revision start`.
 - Complete citation metadata is extracted from embedded EndNote fields in the current source DOCX into `citation_metadata.ris`. A `--metadata-ris` file is only a fallback for documents with no embedded EndNote records.
 - Do not use archived DOCX files, older Markdown exports, TeX sources, response files, cached Asta evidence, or unpinned external citation files as content or citation sources for the revision pass.
 - The paired RIS must be generated from the reference list in the same revised Word document produced during the pass, optionally enriched by the run-local pinned metadata RIS and explicitly recorded Asta additions.
-- The scientific-writing skills in `codex-skills/`, especially `draft-scientific-paper` and `edit-scientific-prose`.
+- The scientific-writing skills in `skills/`, especially `draft-scientific-paper` and `edit-scientific-prose`.
 
 ## Comment Extraction
 
 Launch the pass from the current Word document before planning edits:
 
 ```bash
-pandoc-word-revision start commented-draft.docx \
+asta-revision start commented-draft.docx \
   --output-stem manuscript_v4
 ```
 
 This command creates a run directory, copies the source Word document into it, records the source hash, extracts Word comments, exports the document text/styles to Pandoc markdown, saves `style-reference.docx`, extracts embedded EndNote metadata into `citation_metadata.ris`, creates `agent_inputs/` scoped context files, creates `agent_workflow/` task files plus an audit template, writes `launcher_profile.json`, and writes a manifest naming the permitted generated artifacts for that pass.
 
-Do not use hand-created Markdown exports, archive RIS files, prior response files, or cached evidence as the comment or content source. The only supported Markdown source is the run-local markdown produced by `pandoc-word-revision start` from the current `.docx`.
+Do not use hand-created Markdown exports, archive RIS files, prior response files, or cached evidence as the comment or content source. The only supported Markdown source is the run-local markdown produced by `asta-revision start` from the current `.docx`.
 
 ## Agent Roles
 
@@ -68,7 +68,7 @@ For efficiency, each task file names recommended minimal inputs from `agent_inpu
 
 ## Implementation Rules
 
-- Start every Word-based revision with `pandoc-word-revision start SOURCE.docx`. This is the supported launcher for commented Word drafts.
+- Start every Word-based revision with `asta-revision start SOURCE.docx`. This is the supported launcher for commented Word drafts.
 - Do not start from a hand-run rebuild script for a prior version. Version-specific rebuild scripts may be used only after they have been regenerated from the launcher manifest and the current Word document, and only for the paragraph scope in that manifest.
 - Patch only commented sections and required adjacent text.
 - Do not revise un-commented paragraphs by default.
@@ -94,20 +94,20 @@ For efficiency, each task file names recommended minimal inputs from `agent_inpu
 When a revision pass starts from a Word draft with numeric superscript citations and a numbered reference list, use the Pandoc launcher. It accepts the current source Word document as the content input and may accept a pinned complete RIS metadata overlay:
 
 ```bash
-pandoc-word-revision start commented-draft.docx \
+asta-revision start commented-draft.docx \
   --output-stem manuscript_v4
 ```
 
 Revise only the run-local markdown named in the manifest:
 
 ```bash
-manuscript_v4_pandoc_revision_run/manuscript_v4.revised.md
+manuscript_v4_asta_revision_run/manuscript_v4.revised.md
 ```
 
 Then finalize the pass:
 
 ```bash
-pandoc-word-revision finalize manuscript_v4_pandoc_revision_run/manifest.json
+asta-revision finalize manuscript_v4_asta_revision_run/manifest.json
 ```
 
 Finalization is blocked until the agent workflow audit is complete:
@@ -145,20 +145,6 @@ deterministic repeated citation conversion check
 `docx-numeric-to-endnote-temp` converts numeric superscript citations into EndNote temporary citations. Pass `--ris` so citation metadata comes from the complete paired RIS rather than a lossy Word reference parse. When two distinct references share the same first author and year, the temporary citation includes the title so EndNote matching is unique. Duplicate entries for the same paper remain concise.
 
 By default, the static reference list is removed from the generated `.docx`; EndNote should regenerate the bibliography after the user imports the paired RIS and runs `Update Citations and Bibliography`.
-
-## Citation Pipeline for TeX Drafts
-
-When a revision pass starts from TeX/BibTeX:
-
-```bash
-CITEPROC_ENDNOTE_BIBLIOGRAPHY=references.bib \
-  pandoc -f latex -t docx input.tex -o manuscript_v4.docx -F citeproc-endnote
-
-bib-to-ris references.bib manuscript_v4.ris
-docx-word-sanity manuscript_v4.docx
-```
-
-Use this route only when the TeX source is the active source of truth for that revision pass.
 
 ## Finish in EndNote
 

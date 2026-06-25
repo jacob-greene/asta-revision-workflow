@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from citeproc_endnote_uv.pandoc_revision_agent_runner import run_all
+from asta_revision_workflow.pandoc_revision_agent_runner import run_all
 
 
 def test_agent_runner_executes_four_passes_and_writes_audit(tmp_path, monkeypatch):
@@ -158,10 +158,10 @@ def test_agent_runner_executes_four_passes_and_writes_audit(tmp_path, monkeypatc
         report.write_text("\n".join(report_lines), encoding="utf-8")
         return type("Result", (), {"stdout": ""})()
 
-    def mock_run(command, check=True):
+    def mock_run(command, check=True, cwd=None):
         return fake_run(command)
 
-    monkeypatch.setattr("citeproc_endnote_uv.pandoc_revision_agent_runner.run", mock_run)
+    monkeypatch.setattr("asta_revision_workflow.pandoc_revision_agent_runner.run", mock_run)
 
     assert run_all(manifest, run_dir, "agent {run_dir} --pass-name {pass_name} --report {report}") == 0
     assert len(calls) == 4
@@ -309,11 +309,11 @@ def test_runner_stops_on_step2_pending_asta_without_resolver(tmp_path, monkeypat
                 return type("Result", (), {"stdout": ""})()
         raise AssertionError("missing report path in fake command")
 
-    def mock_run(command, check=True):
+    def mock_run(command, check=True, cwd=None):
         return fake_run(command)
 
-    monkeypatch.setattr("citeproc_endnote_uv.pandoc_revision_agent_runner.run", mock_run)
-    monkeypatch.delenv("PANDOC_REVISION_ASTA_COMMAND", raising=False)
+    monkeypatch.setattr("asta_revision_workflow.pandoc_revision_agent_runner.run", mock_run)
+    monkeypatch.delenv("ASTA_REVISION_ASTA_COMMAND", raising=False)
 
     with pytest.raises(SystemExit, match="no Asta resolver is configured"):
         run_all(manifest, run_dir, "agent {run_dir} --pass-name {pass_name} --report {report}")
@@ -440,11 +440,11 @@ def test_agent_runner_stops_step1_if_knowledge_checks_are_declared_without_asta_
                 return type("Result", (), {"stdout": ""})()
         raise AssertionError("missing report path in fake command")
 
-    def mock_run(command, check=True):
+    def mock_run(command, check=True, cwd=None):
         return fake_run(command)
 
-    monkeypatch.setattr("citeproc_endnote_uv.pandoc_revision_agent_runner.run", mock_run)
-    monkeypatch.delenv("PANDOC_REVISION_ASTA_COMMAND", raising=False)
+    monkeypatch.setattr("asta_revision_workflow.pandoc_revision_agent_runner.run", mock_run)
+    monkeypatch.delenv("ASTA_REVISION_ASTA_COMMAND", raising=False)
 
     with pytest.raises(SystemExit, match="no required `asta_requests` payload entries"):
         run_all(manifest, run_dir, "agent {run_dir} --pass-name {pass_name} --report {report}")
@@ -580,11 +580,11 @@ def test_agent_runner_accepts_four_pass_names_and_computes_overall_readiness(tmp
                 return type("Result", (), {"stdout": ""})()
         raise AssertionError("missing report path in fake command")
 
-    def mock_run(command, check=True):
+    def mock_run(command, check=True, cwd=None):
         return fake_run(command)
 
-    monkeypatch.setattr("citeproc_endnote_uv.pandoc_revision_agent_runner.run", mock_run)
-    monkeypatch.delenv("PANDOC_REVISION_ASTA_COMMAND", raising=False)
+    monkeypatch.setattr("asta_revision_workflow.pandoc_revision_agent_runner.run", mock_run)
+    monkeypatch.delenv("ASTA_REVISION_ASTA_COMMAND", raising=False)
 
     assert run_all(manifest, run_dir, "agent {run_dir} --pass-name {pass_name} --report {report}") == 0
     audit = json.loads((run_dir / "agent_workflow" / "agent_workflow_audit.json").read_text(encoding="utf-8"))
@@ -730,10 +730,10 @@ def test_tone_and_concision_pass_applies_json_replacements(tmp_path, monkeypatch
                 return type("Result", (), {"stdout": ""})()
         raise AssertionError("missing report path in fake command")
 
-    def mock_run(command, check=True):
+    def mock_run(command, check=True, cwd=None):
         return fake_run(command)
 
-    monkeypatch.setattr("citeproc_endnote_uv.pandoc_revision_agent_runner.run", mock_run)
+    monkeypatch.setattr("asta_revision_workflow.pandoc_revision_agent_runner.run", mock_run)
 
     assert run_all(manifest, run_dir, "agent {run_dir} --pass-name {pass_name} --report {report}") == 0
     assert "concise edits" in revised_markdown.read_text(encoding="utf-8")

@@ -1,6 +1,6 @@
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from citeproc_endnote_uv.docx_extract_comments import extract_comments, format_text
+from asta_revision_workflow.docx_extract_comments import extract_comments, format_text
 
 
 def test_extract_comments_from_word_xml(tmp_path):

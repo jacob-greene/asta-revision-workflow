@@ -26,19 +26,19 @@ from dataclasses import asdict
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from citeproc_endnote_uv.docx_endnote_to_ris import export_ris as export_embedded_endnote_ris
-from citeproc_endnote_uv.docx_extract_comments import extract_comments, format_markdown
-from citeproc_endnote_uv.strip_docx_comments import strip_comments
+from asta_revision_workflow.docx_endnote_to_ris import export_ris as export_embedded_endnote_ris
+from asta_revision_workflow.docx_extract_comments import extract_comments, format_markdown
+from asta_revision_workflow.strip_docx_comments import strip_comments
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 W_URI = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 W = f"{{{W_URI}}}"
 PANDOC_FROM = "docx+styles"
 PANDOC_TO = "markdown+bracketed_spans+fenced_divs+link_attributes+pipe_tables+tex_math_single_backslash"
+# The coordinating step performs no LLM work itself; it fans out to per-pass
+# Claude calls, so it invokes the agent runner entry point directly.
 DEFAULT_AGENT_WORKFLOW_COMMAND = (
-    'codex exec --model gpt-5.3-codex-spark -c model_reasoning_effort="medium" '
-    "--skip-git-repo-check "
-    "pandoc-word-revision-agent --manifest {manifest} --run-dir {run_dir}"
+    "asta-revision-agent --manifest {manifest} --run-dir {run_dir}"
 )
 COMMENT_PARTS = {
     "word/comments.xml",
@@ -50,6 +50,7 @@ AGENT_WORKFLOW_PASSES = [
     {
         "name": "revision_implementation",
         "report": "revision_implementation_report.md",
+        "model": "claude-opus-4-8",
         "required_checks": [
             "revisions_applied",
             "comment_scope_preserved",
@@ -79,26 +80,35 @@ AGENT_WORKFLOW_PASSES = [
     {
         "name": "asta_query_and_collation",
         "report": "asta_query_and_collation_report.md",
+        "model": "claude-opus-4-8",
         "required_checks": [
             "modified_claims_citation_checked",
             "unsupported_claims_resolved",
             "asta_requests_collated",
+            "claim_redundancy_checked",
             "source_docx_only",
             "draft_scientific_paper_skill_used",
         ],
         "required_skills": ["draft-scientific-paper", "asta-query-and-collation"],
         "instruction": (
             "Use the current artifacts to verify and execute the Asta-driven evidence policy before implementation is finalized. "
-            "Run or verify Asta resolution for every required request in `agent_workflow/asta_requests.json`, then "
+            "First guard against redundant citations: for every required request in `agent_workflow/asta_requests.json`, scan "
+            "`agent_workflow/cite_backed_statements.md` (the existing cite-backed statements in the current revised markdown) "
+            "for a statement that already makes the same claim with a citation. If one exists, drop the request, set its "
+            "status to `resolved_by_existing_citation` with the matching anchor, and reuse/cross-reference that existing "
+            "citation instead of adding a new statement or a second citation. Keep a request only when the claim is genuinely "
+            "new to the document. Then run or verify Asta resolution for every remaining required request, and "
             "collate any resolved outputs in `agent_workflow/asta`, `agent_workflow/asta_reference_additions.json`, and "
             "related response JSON files for reviewer visibility. Confirm modified claims without adjacent evidence were resolved "
             "or intentionally softened; do not allow unsupported knowledge claims to remain unresolved. "
-            "Mark whether required requests were reviewed and resolved or explicitly not needed."
+            "Mark whether required requests were reviewed and resolved or explicitly not needed, and report "
+            "`claim_redundancy_checked: true` once the redundancy scan above has run."
         ),
     },
     {
         "name": "rigor_critique",
         "report": "rigor_critique_report.md",
+        "model": "claude-sonnet-4-6",
         "required_checks": [
             "rigor_approved",
             "new_knowledge_claims_skeptically_reviewed",
@@ -114,6 +124,7 @@ AGENT_WORKFLOW_PASSES = [
     {
         "name": "tone_and_concision",
         "report": "tone_concision_report.md",
+        "model": "claude-sonnet-4-6",
         "required_checks": [
             "tone_reviewed",
             "redundancy_checked",
@@ -147,7 +158,7 @@ def endnote_conversion_command(raw_docx: Path, output_docx: Path, ris: Path) -> 
     return [
         sys.executable,
         "-m",
-        "citeproc_endnote_uv.docx_numeric_to_endnote_temp",
+        "asta_revision_workflow.docx_numeric_to_endnote_temp",
         str(raw_docx),
         str(output_docx),
         "--ris",
@@ -162,7 +173,7 @@ def reference_list_to_ris_command(
     command = [
         sys.executable,
         "-m",
-        "citeproc_endnote_uv.docx_reference_list_to_ris",
+        "asta_revision_workflow.docx_reference_list_to_ris",
         str(source_docx),
         str(ris),
     ]
@@ -225,7 +236,7 @@ def require_docx(path: Path) -> None:
 
 def require_pandoc() -> None:
     if shutil.which("pandoc") is None:
-        raise SystemExit("pandoc is required for pandoc-word-revision but was not found on PATH.")
+        raise SystemExit("pandoc is required for asta-revision but was not found on PATH.")
 
 
 def ensure_inside_run_dir(path: Path, run_dir: Path, label: str) -> Path:
@@ -547,7 +558,7 @@ def write_agent_workflow_tasks(run_dir: Path, manifest: dict) -> dict[str, objec
                     "## Required Checks",
                     *[f"- `{check}`" for check in workflow_pass["required_checks"]],
                     "",
-                    "## Required Codex Skills",
+                    "## Required Skills",
                     *[f"- `{skill}`" for skill in workflow_pass.get("required_skills", [])],
                     "",
                     "Write the report to:",
@@ -565,6 +576,7 @@ def write_agent_workflow_tasks(run_dir: Path, manifest: dict) -> dict[str, objec
                 "name": workflow_pass["name"],
                 "required_checks": workflow_pass["required_checks"],
                 "required_skills": workflow_pass.get("required_skills", []),
+                "model": workflow_pass.get("model", "claude-opus-4-8"),
                 "report": report_rel,
             }
         )
@@ -620,11 +632,35 @@ def write_asta_request_template(run_dir: Path, workflow: dict[str, object]) -> N
                 "Evidence reviewers add required requests here when a modified claim cannot be supported by "
                 "adjacent citations from the current DOCX. Asta requests are the default resolution for "
                 "claims that should be retained. Finalize resolves pending required requests with "
-                "--asta-command or PANDOC_REVISION_ASTA_COMMAND, validates complete RIS, and fails if unresolved."
+                "--asta-command or ASTA_REVISION_ASTA_COMMAND, validates complete RIS, and fails if unresolved."
             ),
             "requests": [],
         },
     )
+
+
+def link_skills_into_run_dir(run_dir: Path) -> None:
+    """Expose the repo's scientific-writing skills to headless Claude subagents.
+
+    Claude Code discovers project skills under `<cwd>/.claude/skills`. The agent
+    runner launches each pass with `cwd=run_dir`, so symlink (copy as a fallback)
+    each repo skill directory into `run_dir/.claude/skills/`.
+    """
+    skills_root = SCRIPT_DIR.parent.parent / "skills"
+    if not skills_root.is_dir():
+        return
+    target_dir = run_dir / ".claude" / "skills"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for skill_dir in sorted(skills_root.iterdir()):
+        if not skill_dir.is_dir():
+            continue
+        link = target_dir / skill_dir.name
+        if link.exists() or link.is_symlink():
+            continue
+        try:
+            link.symlink_to(skill_dir.resolve(), target_is_directory=True)
+        except OSError:
+            shutil.copytree(skill_dir, link)
 
 
 def parse_ris_records(text: str) -> list[dict[str, list[str]]]:
@@ -720,7 +756,7 @@ def workflow_agent_command_parts(command: str, run_dir: Path, manifest_path: Pat
 
 
 def run_agent_workflow_command(run_dir: Path, manifest_path: Path, command: str | None) -> None:
-    resolver = command or os.environ.get("PANDOC_REVISION_AGENT_COMMAND")
+    resolver = command or os.environ.get("ASTA_REVISION_AGENT_COMMAND")
     if not resolver:
         resolver = DEFAULT_AGENT_WORKFLOW_COMMAND
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -728,7 +764,7 @@ def run_agent_workflow_command(run_dir: Path, manifest_path: Path, command: str 
 
 
 def run_asta_preflight_command(run_dir: Path, manifest: dict, command: str | None) -> None:
-    resolver = command or os.environ.get("PANDOC_REVISION_ASTA_COMMAND")
+    resolver = command or os.environ.get("ASTA_REVISION_ASTA_COMMAND")
     if not resolver:
         return
 
@@ -800,12 +836,12 @@ def resolve_asta_requests(run_dir: Path, manifest: dict, command: str | None) ->
     if not pending:
         return combine_asta_ris(run_dir, manifest, requests_path, ledger)
 
-    resolver = command or os.environ.get("PANDOC_REVISION_ASTA_COMMAND")
+    resolver = command or os.environ.get("ASTA_REVISION_ASTA_COMMAND")
     if not resolver:
         ids = ", ".join(normalized_request_id(item.get("id"), index) for index, item in enumerate(pending, start=1))
         raise SystemExit(
             "Asta evidence is required before finalize, but no resolver command is configured. "
-            "Set PANDOC_REVISION_ASTA_COMMAND or pass --asta-command. Pending request ids: " + ids
+            "Set ASTA_REVISION_ASTA_COMMAND or pass --asta-command. Pending request ids: " + ids
         )
 
     asta_dir = ensure_inside_run_dir(run_dir / str(workflow.get("asta_resolutions_dir", "agent_workflow/asta")), run_dir, "Asta output directory")
@@ -877,7 +913,7 @@ def combine_asta_ris(run_dir: Path, manifest: dict, requests_path: Path, ledger:
 def validate_agent_workflow(run_dir: Path, manifest: dict, revised_markdown: Path) -> dict:
     workflow = manifest.get("agent_workflow", {})
     if not workflow.get("required", False):
-        raise SystemExit("Manifest does not require the agent workflow; rerun `pandoc-word-revision start`.")
+        raise SystemExit("Manifest does not require the agent workflow; rerun `asta-revision start`.")
 
     audit_path = ensure_inside_run_dir(run_dir / workflow.get("audit_file", ""), run_dir, "agent workflow audit")
     if not audit_path.exists():
@@ -971,7 +1007,7 @@ def start(args: argparse.Namespace) -> int:
         raise SystemExit(f"Source DOCX does not exist: {source}")
 
     output_stem = args.output_stem or source.stem
-    run_dir = (Path(args.run_dir) if args.run_dir else source.parent / f"{output_stem}_pandoc_revision_run").resolve()
+    run_dir = (Path(args.run_dir) if args.run_dir else source.parent / f"{output_stem}_asta_revision_run").resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
 
     source_copy = run_dir / source.name
@@ -1076,6 +1112,8 @@ def start(args: argparse.Namespace) -> int:
     with timed_step(profile_steps, "write_agent_workflow_scaffold"):
         manifest["agent_workflow"] = write_agent_workflow_tasks(run_dir, manifest)
         write_asta_request_template(run_dir, manifest["agent_workflow"])
+    with timed_step(profile_steps, "link_skills_into_run_dir"):
+        link_skills_into_run_dir(run_dir)
     with timed_step(profile_steps, "write_manifest"):
         write_json(manifest_path, manifest)
     profile_start = time.perf_counter()
@@ -1107,14 +1145,14 @@ def start(args: argparse.Namespace) -> int:
     for task in manifest["agent_workflow"]["task_files"]:
         print(f"  - {run_dir / task}")
     print(f"Agent workflow audit required before finalize: {run_dir / manifest['agent_workflow']['audit_file']}")
-    print(f"Finalize with: pandoc-word-revision finalize {manifest_path}")
+    print(f"Finalize with: asta-revision finalize {manifest_path}")
     return 0
 
 
 def run_complete(args: argparse.Namespace) -> int:
     source = Path(args.source_docx).resolve()
     output_stem = args.output_stem or source.stem
-    run_dir = (Path(args.run_dir) if args.run_dir else source.parent / f"{output_stem}_pandoc_revision_run").resolve()
+    run_dir = (Path(args.run_dir) if args.run_dir else source.parent / f"{output_stem}_asta_revision_run").resolve()
     manifest_path = run_dir / "manifest.json"
 
     start_args = argparse.Namespace(
@@ -1125,7 +1163,7 @@ def run_complete(args: argparse.Namespace) -> int:
     )
     start(start_args)
     if args.asta_command:
-        os.environ["PANDOC_REVISION_ASTA_COMMAND"] = args.asta_command
+        os.environ["ASTA_REVISION_ASTA_COMMAND"] = args.asta_command
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     run_asta_preflight_command(run_dir, manifest, args.asta_command)
     run_agent_workflow_command(run_dir, manifest_path, args.agent_command)
@@ -1170,11 +1208,11 @@ def finalize(args: argparse.Namespace) -> int:
     check_ris_cmd = reference_list_to_ris_command(raw_docx, ris, metadata_ris, require_metadata_match=metadata_ris is not None)
     check_ris_cmd.append("--check")
     run(check_ris_cmd)
-    run([sys.executable, "-m", "citeproc_endnote_uv.docx_plain_numeric_citation_check", str(raw_docx)])
+    run([sys.executable, "-m", "asta_revision_workflow.docx_plain_numeric_citation_check", str(raw_docx)])
     run(endnote_conversion_command(raw_docx, final_docx, ris))
     run(["unzip", "-t", str(final_docx)])
-    run([sys.executable, "-m", "citeproc_endnote_uv.docx_word_sanity", str(final_docx)])
-    run([sys.executable, "-m", "citeproc_endnote_uv.docx_endnote_ris_sync", str(final_docx), str(ris)])
+    run([sys.executable, "-m", "asta_revision_workflow.docx_word_sanity", str(final_docx)])
+    run([sys.executable, "-m", "asta_revision_workflow.docx_endnote_ris_sync", str(final_docx), str(ris)])
     run(check_ris_cmd)
 
     repeat_docx = final_docx.with_name(f"{final_docx.stem}.determinism-check{final_docx.suffix}")
@@ -1248,16 +1286,16 @@ def main(argv: list[str] | None = None) -> int:
             "Command that runs the required revision agents. If the command string contains placeholders, "
             "{manifest}, {run_dir}, {source_docx}, {source_markdown}, {revised_markdown}, {comments_markdown}, "
             "{comments_json}, {audit_file}, and {asta_requests} are expanded. Otherwise the launcher appends "
-            "--manifest and --run-dir. May also be set with PANDOC_REVISION_AGENT_COMMAND. "
-            "If omitted, Step 2 defaults to a `codex exec` invocation running "
-            "`pandoc-word-revision-agent` with `gpt-5.3-codex-spark`."
+            "--manifest and --run-dir. May also be set with ASTA_REVISION_AGENT_COMMAND. "
+            "If omitted, Step 2 defaults to calling the `asta-revision-agent` runner directly "
+            "(plain Python coordination; the runner fans out to per-pass `claude -p` calls)."
         ),
     )
     run_parser.add_argument(
         "--asta-command",
         help=(
             "Command used during finalize to resolve pending agent_workflow/asta_requests.json entries. "
-            "May also be set with PANDOC_REVISION_ASTA_COMMAND."
+            "May also be set with ASTA_REVISION_ASTA_COMMAND."
         ),
     )
     run_parser.set_defaults(func=run_complete)
@@ -1270,7 +1308,7 @@ def main(argv: list[str] | None = None) -> int:
             "Command used to resolve pending agent_workflow/asta_requests.json entries. If the command string "
             "contains placeholders, {request_json}, {output_json}, {output_ris}, {run_dir}, and {request_id} "
             "are expanded. Otherwise the launcher appends --request, --output, and --ris arguments. "
-            "May also be set with PANDOC_REVISION_ASTA_COMMAND."
+            "May also be set with ASTA_REVISION_ASTA_COMMAND."
         ),
     )
     finalize_parser.set_defaults(func=finalize)

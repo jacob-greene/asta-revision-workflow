@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from citeproc_endnote_uv.pandoc_revision_launcher import (
+from asta_revision_workflow.pandoc_revision_launcher import (
     AGENT_WORKFLOW_PASSES,
     PANDOC_FROM,
     PANDOC_TO,
@@ -354,13 +354,13 @@ def test_workflow_agent_command_parts_append_manifest_and_run_dir(tmp_path):
     assert command == ["agent-runner", "--strict", "--manifest", str(manifest_path), "--run-dir", str(tmp_path)]
 
 
-def test_agent_workflow_command_defaults_to_internal_codex_runner(tmp_path, monkeypatch):
+def test_agent_workflow_command_defaults_to_internal_runner(tmp_path, monkeypatch):
     calls = []
 
     def fake_run(command):
         calls.append(command)
 
-    monkeypatch.setattr("citeproc_endnote_uv.pandoc_revision_launcher.run", fake_run)
+    monkeypatch.setattr("asta_revision_workflow.pandoc_revision_launcher.run", fake_run)
     manifest_path = tmp_path / "manifest.json"
 
     manifest = {
@@ -384,5 +384,8 @@ def test_agent_workflow_command_defaults_to_internal_codex_runner(tmp_path, monk
     run_agent_workflow_command(tmp_path, manifest_path, None)
 
     assert calls
-    assert calls[0][0] == "codex"
-    assert calls[0][1:4] == ["exec", "--model", "gpt-5.3-codex-spark"]
+    # The coordinator does no LLM work; it invokes the runner entry point directly.
+    assert calls[0][0] == "asta-revision-agent"
+    assert "--manifest" in calls[0]
+    assert "--run-dir" in calls[0]
+    assert "codex" not in calls[0]

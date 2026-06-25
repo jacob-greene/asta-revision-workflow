@@ -2,7 +2,7 @@ import base64
 import html
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from citeproc_endnote_uv.docx_endnote_to_ris import export_ris, records_from_docx
+from asta_revision_workflow.docx_endnote_to_ris import export_ris, records_from_docx
 
 
 def make_docx(path, document_xml):

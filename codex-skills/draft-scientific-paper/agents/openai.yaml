@@ -1,4 +1,0 @@
-interface:
-  display_name: "Draft Scientific Paper"
-  short_description: "Structure papers around claims and evidence"
-  default_prompt: "Use $draft-scientific-paper to draft or revise this manuscript section around a clear scientific story."

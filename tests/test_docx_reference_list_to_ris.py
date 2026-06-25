@@ -1,4 +1,4 @@
-from citeproc_endnote_uv.docx_reference_list_to_ris import (
+from asta_revision_workflow.docx_reference_list_to_ris import (
     author_list,
     export_ris,
     parse_reference,
@@ -12,7 +12,7 @@ import pytest
 from zipfile import ZIP_DEFLATED, ZipFile
 from xml.etree import ElementTree as ET
 
-from citeproc_endnote_uv.docx_numeric_to_endnote_temp import Reference, convert, make_temp_citation
+from asta_revision_workflow.docx_numeric_to_endnote_temp import Reference, convert, make_temp_citation
 
 
 def test_author_list_preserves_all_named_authors():

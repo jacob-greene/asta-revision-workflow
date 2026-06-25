@@ -3,7 +3,7 @@
 
 This runner is intentionally data-local:
 
-- It reads only run artifacts already created by ``pandoc-word-revision start``.
+- It reads only run artifacts already created by ``asta-revision start``.
 - It invokes a configurable sub-agent command per pass.
 - It validates report artifacts and writes ``agent_workflow/agent_workflow_audit.json``.
 
@@ -23,19 +23,25 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from citeproc_endnote_uv.pandoc_revision_launcher import AGENT_WORKFLOW_PASSES, resolve_asta_requests
+from asta_revision_workflow.docx_modified_citation_support import split_sentences as split_markdown_sentences
+from asta_revision_workflow.pandoc_revision_launcher import AGENT_WORKFLOW_PASSES, resolve_asta_requests
 
 MAX_EMBEDDED_CHARS = 50000
+# Headless Claude. `{model}` is the per-pass model (see AGENT_WORKFLOW_PASSES).
+# No `{prompt}` placeholder: the prompt is appended as the final argv by
+# resolve_subagent_command (the template is shlex-split, so a multi-line prompt
+# embedded here would shatter). claude -p prints the final message to stdout;
+# run_single_pass captures that into the pass report (no --output-last-message).
 DEFAULT_SUBAGENT_COMMAND = (
-    'codex exec --model gpt-5.3-codex-spark -c model_reasoning_effort="medium" '
-    "--skip-git-repo-check -s workspace-write -C {run_dir} --ephemeral "
-    "--output-last-message {report}"
+    "claude -p --model {model} --add-dir {run_dir} --permission-mode acceptEdits"
 )
 
 
-def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run(command: list[str], *, check: bool = True, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     print("+ " + " ".join(command))
-    result = subprocess.run(command, check=check, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    result = subprocess.run(
+        command, check=check, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=cwd
+    )
     if result.stdout:
         print(result.stdout)
     return result
@@ -218,6 +224,10 @@ def extract_revision_payload(text: str) -> dict[str, Any] | None:
 
 ANNOTATION_REF = '[]{custom-style="annotation reference"}'
 CITATION_CLUSTER = re.compile(r"(?<![A-Za-z0-9^])(\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*)")
+# Citation markers as they appear in run-local revised markdown: numeric
+# superscript clusters (`^12^`, `^3-5^`, `^1,4^`) and EndNote temporary citation
+# braces (`{Author, 2020 #123}`). Used by the claim-level redundancy guard.
+MARKDOWN_CITATION_RE = re.compile(r"\^\d+(?:[-,]\d+)*\^|\{[^{}]+\}")
 ENDNOTE_BIBLIOGRAPHY_DIV = re.compile(
     r"\n?:::\s*\{custom-style=\"EndNote Bibliography\"\}\s*\n.*?\n:::\s*",
     re.S,
@@ -336,6 +346,41 @@ def write_scope_review(run_dir: Path, manifest: dict[str, Any]) -> Path:
         )
     if changed == 0 and len(source_paragraphs) == len(revised_paragraphs):
         rows.append("No paragraph-level prose changes detected.")
+    output.write_text("\n".join(rows).rstrip() + "\n", encoding="utf-8")
+    return output
+
+
+def write_cite_backed_statements(run_dir: Path, manifest: dict[str, Any]) -> Path:
+    """Emit the existing cite-backed statements in the current revised markdown.
+
+    The asta_query_and_collation pass uses this for the claim-level redundancy
+    guard: before adding a new cite-backed statement, it checks whether the
+    document already makes the same claim with a citation elsewhere and, if so,
+    reuses that citation instead of adding a redundant one. Regenerated per run
+    because the revised markdown mutates during revision_implementation.
+    """
+    revised_markdown = run_dir / manifest["generated_artifacts"]["revised_markdown"]
+    output = run_dir / "agent_workflow" / "cite_backed_statements.md"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    text = strip_endnote_bibliography(revised_markdown.read_text(encoding="utf-8", errors="ignore"))
+    rows: list[str] = [
+        "# Existing Cite-Backed Statements",
+        "",
+        "Sentences in the current revised markdown that already carry a citation marker.",
+        "Before adding a new cite-backed statement or citation, check whether the same",
+        "claim already appears here; if it does, reuse/cross-reference that citation",
+        "instead of adding a redundant statement or a second citation.",
+        "",
+    ]
+    count = 0
+    for paragraph_index, paragraph in enumerate(markdown_paragraphs(text), start=1):
+        for sentence in split_markdown_sentences(paragraph):
+            if not MARKDOWN_CITATION_RE.search(sentence.text):
+                continue
+            count += 1
+            rows.append(f"- (paragraph {paragraph_index}) {sentence.text.strip()}")
+    if count == 0:
+        rows.append("No cite-backed statements detected in the current revised markdown.")
     output.write_text("\n".join(rows).rstrip() + "\n", encoding="utf-8")
     return output
 
@@ -503,7 +548,7 @@ def pending_required_asta_requests(run_dir: Path, manifest: dict[str, Any]) -> l
 
 
 def asta_resolver_configured() -> bool:
-    return bool(os.environ.get("PANDOC_REVISION_ASTA_COMMAND"))
+    return bool(os.environ.get("ASTA_REVISION_ASTA_COMMAND"))
 
 
 def resolve_pending_asta_requests(run_dir: Path, manifest: dict[str, Any], *, reason: str) -> bool:
@@ -514,9 +559,9 @@ def resolve_pending_asta_requests(run_dir: Path, manifest: dict[str, Any], *, re
         ids = ", ".join(str(item.get("id", f"request-{index}")) for index, item in enumerate(pending, start=1))
         raise SystemExit(
             f"{reason} created required Asta requests, but no Asta resolver is configured. "
-            "Set PANDOC_REVISION_ASTA_COMMAND or pass --asta-command. Pending request ids: " + ids
+            "Set ASTA_REVISION_ASTA_COMMAND or pass --asta-command. Pending request ids: " + ids
         )
-    resolve_asta_requests(run_dir, manifest, os.environ.get("PANDOC_REVISION_ASTA_COMMAND"))
+    resolve_asta_requests(run_dir, manifest, os.environ.get("ASTA_REVISION_ASTA_COMMAND"))
     return True
 
 
@@ -571,7 +616,7 @@ def embedded_inputs_for_pass(run_dir: Path, manifest: dict[str, Any], name: str)
     asta_dir = run_dir / str(workflow.get("asta_resolutions_dir", "agent_workflow/asta"))
     if asta_dir.exists():
         for path in sorted(asta_dir.glob("responses/*.json")):
-            if path.name.endswith(".asta.json"):
+            if path.name.endswith((".asta.json", ".bip.json")):
                 continue
             extra_paths.append((path, str(path.relative_to(run_dir))))
         additions = run_dir / "asta_reference_additions.json"
@@ -581,6 +626,10 @@ def embedded_inputs_for_pass(run_dir: Path, manifest: dict[str, Any], name: str)
         scope_review = run_dir / "agent_workflow" / "scope_review.md"
         if scope_review.exists():
             extra_paths.append((scope_review, str(scope_review.relative_to(run_dir))))
+    if name == "asta_query_and_collation":
+        cite_backed = run_dir / "agent_workflow" / "cite_backed_statements.md"
+        if cite_backed.exists():
+            extra_paths.append((cite_backed, str(cite_backed.relative_to(run_dir))))
     for path, label in extra_paths:
         path = path.resolve()
         try:
@@ -620,9 +669,9 @@ def pass_prompt(manifest_path: Path, run_dir: Path, manifest: dict[str, Any], na
         skill_names = ", ".join(f"`{skill}`" for skill in required_skills)
         skill_checks = ", ".join(f"`{skill.replace('-', '_')}_skill_used: true`" for skill in required_skills)
         skill_instruction = (
-            "Required Codex skills: "
+            "Required skills: "
             f"{skill_names}.\n"
-            "Use these skills the same way the main Codex agent would: invoke each named skill before doing this pass, "
+            "Use these skills the same way the main agent would: invoke each named skill before doing this pass, "
             "follow its SKILL.md guidance, and make the skill use explicit in the final report. If a required skill "
             "is unavailable in the nested session, mark its check false and explain why. Required skill checks: "
             f"{skill_checks}.\n\n"
@@ -643,7 +692,7 @@ def pass_prompt(manifest_path: Path, run_dir: Path, manifest: dict[str, Any], na
         f"Required checks: {', '.join(required)}\n\n"
         "Use the task file context below and return a concise report as your final answer.\n"
         "Do not call shell commands. Do not use file-editing tools. Do not attempt to write files. "
-        "The parent runner captures your final answer into the report target with --output-last-message, "
+        "The parent runner captures your final answer from stdout into the report target, "
         "then applies any structured payload inside the run directory.\n\n"
         f"{skill_instruction}"
         f"{task_note}\n\n"
@@ -689,28 +738,28 @@ def run_single_pass(
     task = run_dir / "agent_workflow" / "tasks" / f"{name}.md"
     report = run_dir / report_rel
     report.parent.mkdir(parents=True, exist_ok=True)
-    report.write_text(
-        "\n".join(
-            [
-                f"# {name}",
-                "",
-                "status: pending",
-                *(f"{check}: false" for check in pass_definition.get("required_checks", [])),
-                "",
-            ]
-        ),
-        encoding="utf-8",
+    pending_report = "\n".join(
+        [
+            f"# {name}",
+            "",
+            "status: pending",
+            *(f"{check}: false" for check in pass_definition.get("required_checks", [])),
+            "",
+        ]
     )
+    report.write_text(pending_report, encoding="utf-8")
 
     required = list(pass_definition.get("required_checks", []))
     if not task.exists():
         raise SystemExit(f"Missing pass task file: {task}")
 
     write_scope_review(run_dir, manifest)
+    write_cite_backed_statements(run_dir, manifest)
     prompt = pass_prompt(manifest_path, run_dir, manifest, name, task, report)
     context = {
         "manifest": str(manifest_path),
         "run_dir": str(run_dir),
+        "model": str(pass_definition.get("model", "claude-opus-4-8")),
         "source_docx": str(run_dir / manifest["source_docx"]),
         "source_markdown": str(run_dir / manifest["generated_artifacts"]["source_markdown"]),
         "revised_markdown": str(run_dir / manifest["generated_artifacts"]["revised_markdown"]),
@@ -723,7 +772,13 @@ def run_single_pass(
         "pass_name": name,
     }
 
-    result = run(resolve_subagent_command(subagent_template, context, prompt))
+    result = run(resolve_subagent_command(subagent_template, context, prompt), cwd=run_dir)
+    # claude -p prints the final message to stdout and does not write {report}.
+    # If the subagent left the pre-written pending template untouched, capture
+    # stdout into the report. The Codex path (and test mocks that write {report}
+    # directly) leave report != template, so their reports are preserved.
+    if report.read_text(encoding="utf-8") == pending_report and result.stdout and result.stdout.strip():
+        report.write_text(result.stdout, encoding="utf-8")
     if not report.exists() or not report.read_text(encoding="utf-8").strip():
         raise SystemExit(f"Pass {name} failed to write report: {report}")
 
@@ -840,7 +895,7 @@ def run_all(manifest: Path, run_dir: Path, subagent_command: str | None) -> int:
     if not passes:
         raise SystemExit("No passes are configured in the manifest.")
     if not subagent_command:
-        subagent_command = os.environ.get("PANDOC_REVISION_SUBAGENT_COMMAND")
+        subagent_command = os.environ.get("ASTA_REVISION_SUBAGENT_COMMAND")
     if not subagent_command:
         subagent_command = DEFAULT_SUBAGENT_COMMAND
 
@@ -894,7 +949,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.asta_command:
-        os.environ.setdefault("PANDOC_REVISION_ASTA_COMMAND", args.asta_command)
+        os.environ.setdefault("ASTA_REVISION_ASTA_COMMAND", args.asta_command)
 
     manifest = Path(args.manifest).resolve()
     run_dir = Path(args.run_dir).resolve()

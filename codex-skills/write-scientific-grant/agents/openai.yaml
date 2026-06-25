@@ -1,4 +1,0 @@
-interface:
-  display_name: "Write Scientific Grant"
-  short_description: "Write proposals that recruit reviewer support"
-  default_prompt: "Use $write-scientific-grant to revise this grant section for clarity, advocate appeal, and funder fit."

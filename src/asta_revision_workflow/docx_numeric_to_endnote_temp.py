@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from citeproc_endnote_uv.strip_docx_comments import (
+from asta_revision_workflow.strip_docx_comments import (
     COMMENT_PARTS,
     remove_comment_relationships,
     remove_content_type_overrides,

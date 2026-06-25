@@ -1,4 +1,0 @@
-interface:
-  display_name: "Edit Scientific Prose"
-  short_description: "Cut clutter and sharpen scientific prose"
-  default_prompt: "Use $edit-scientific-prose to revise this draft for clarity, brevity, and scientific force."

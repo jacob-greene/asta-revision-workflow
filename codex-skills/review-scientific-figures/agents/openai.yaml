@@ -1,4 +1,0 @@
-interface:
-  display_name: "Review Scientific Figures"
-  short_description: "Make scientific figures clear and honest"
-  default_prompt: "Use $review-scientific-figures to critique these figures for clarity, data integrity, and publication readiness."
